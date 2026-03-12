@@ -30,39 +30,52 @@ export default function App() {
     }
   };
 
-  const handleUpload = async () => {
-    if (!videoFile) return;
+const handleUpload = async () => {
+  if (!videoFile) return;
 
-    setIsUploading(true);
-    setUploadStatus('Uploading and processing video... This may take a moment.');
+  setIsUploading(true);
+  
+  // STEP 1: Uploading
+  setUploadStatus('⏳ Uploading Video to Server...');
 
-    const formData = new FormData();
-    formData.append('file', videoFile);
+  const formData = new FormData();
+  formData.append('file', videoFile);
 
-    try {
-      const response = await fetch('http://localhost:8000/api/upload-video', {
-        method: 'POST',
-        body: formData,
-      });
+  try {
+    const response = await fetch('http://localhost:8000/api/upload-video', {
+      method: 'POST',
+      body: formData,
+    });
 
-      const data = await response.json();
+    // STEP 2: Processing (This happens while we wait for the response)
+    setUploadStatus('⚙️ Generating Timestamped Transcript via Gemini...');
 
-      if (response.ok) {
+    const data = await response.json();
+
+    if (response.ok) {
+      // STEP 3: Embedding & Indexing
+      setUploadStatus('🧠 Processing AI Embeddings & Indexing in OpenSearch...');
+      
+      // Delay for a second to let the user see the embedding status
+      setTimeout(() => {
         setVideoId(data.video_id);
-        setUploadStatus('✅ Video successfully processed and indexed! You can now ask questions.');
+        // STEP 4: Done
+        setUploadStatus('✅ Ready for Students!');
         setChatHistory([{ 
           role: 'assistant', 
-          content: 'Hello! I have analyzed the video. What would you like to know?' 
+          content: 'Hello! The video is processed. You can now ask any question!' 
         }]);
-      } else {
-        setUploadStatus(`❌ Error: ${data.detail}`);
-      }
-    } catch (error) {
-      setUploadStatus(`❌ Network Error: Could not connect to the server. ${error.message}`);
-    } finally {
-      setIsUploading(false);
+      }, 1500);
+
+    } else {
+      setUploadStatus(`❌ Error: ${data.detail}`);
     }
-  };
+  } catch (error) {
+    setUploadStatus(`❌ Network Error: Check Backend Connection.`);
+  } finally {
+    setIsUploading(false);
+  }
+};
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
