@@ -167,7 +167,7 @@ async def upload_and_process_video(file: UploadFile = File(...)):
 
 @app.post("/api/chat")
 async def ask_question(request: ChatRequest):
-    """Retrieves relevant video context and generates an AI answer."""
+    """Retrieves relevant video context and generates an AI answer using Flash Lite."""
     try:
         # 1. Embed Question
         embed = client.models.embed_content(model="text-embedding-004", contents=request.question)
@@ -185,14 +185,18 @@ async def ask_question(request: ChatRequest):
         except:
             context = "Context unavailable (DB Offline)."
 
-        # 3. Generate Answer with Gemini
+        # 3. Generate Answer with Gemini Flash Lite
         system_instr = "Answer based ONLY on context. Include timestamps as: ⏱️ [Video Reference: MM:SS - MM:SS]"
         config = types.GenerateContentConfig(system_instruction=system_instr, temperature=0.0)
         
         history = "\n".join([f"{m.role}: {m.content}" for m in request.chat_history])
         final_prompt = f"Context: {context}\nHistory: {history}\nQuestion: {request.question}"
         
-        answer = client.models.generate_content(model="gemini-2.5-flash", contents=final_prompt, config=config)
+        answer = client.models.generate_content(
+            model="gemini-2.5-flash-lite", 
+            contents=final_prompt, 
+            config=config
+        )
         
         return {"status": "success", "answer": answer.text}
 
