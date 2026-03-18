@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 from opensearchpy import OpenSearch, RequestsHttpConnection
 from pydantic import BaseModel
 from typing import List
-from botocore.exceptions import NoCredentialsError
 
 # Load environment variables from the .env file
 load_dotenv()
@@ -29,19 +28,22 @@ app.add_middleware(
 
 # --- External Services Configuration ---
 
-# 1. Google Gemini Configuration
+# 1. Google Gemini API Configuration
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     raise ValueError("CRITICAL ERROR: GEMINI_API_KEY is missing.")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# 2. AWS OpenSearch Configuration
+# 2. AWS OpenSearch Configuration (t3.small.search)
 opensearch_client = OpenSearch(
     hosts=[{'host': os.getenv("OPENSEARCH_HOST", "localhost"), 'port': int(os.getenv("OPENSEARCH_PORT", 443))}],
     http_auth=(os.getenv("OPENSEARCH_USER", "admin"), os.getenv("OPENSEARCH_PASS", "admin")),
     use_ssl=True,
     verify_certs=True,
-    connection_class=RequestsHttpConnection
+    connection_class=RequestsHttpConnection,
+    timeout=60,
+    max_retries=5,
+    retry_on_timeout=True
 )
 INDEX_NAME = "video-transcripts-index"
 
@@ -67,10 +69,11 @@ def setup_opensearch_index():
                         "video_id": {"type": "keyword"},
                         "timestamp": {"type": "text"},
                         "text_chunk": {"type": "text"},
-                        "s3_url": {"type": "keyword"},
+                        "video_s3_url": {"type": "keyword"},
+                        "transcript_s3_url": {"type": "keyword"},
                         "embedding": {
                             "type": "knn_vector",
-                            "dimension": 768  # Dimension for text-embedding-004
+                            "dimension": 768
                         }
                     }
                 }
@@ -80,13 +83,27 @@ def setup_opensearch_index():
     except Exception as e:
         print(f"⚠️ OpenSearch Connection Warning: {e}")
 
-def upload_to_s3(local_path, file_name):
-    """Uploads the processed video to AWS S3 for permanent storage."""
+def upload_file_to_s3(local_path, s3_file_key):
+    """Uploads the video file to a specific folder in S3."""
     try:
-        s3_client.upload_file(local_path, BUCKET_NAME, file_name)
-        return f"https://{BUCKET_NAME}.s3.{os.getenv('AWS_REGION')}.amazonaws.com/{file_name}"
+        s3_client.upload_file(local_path, BUCKET_NAME, s3_file_key)
+        return f"https://{BUCKET_NAME}.s3.{os.getenv('AWS_REGION')}.amazonaws.com/{s3_file_key}"
     except Exception as e:
-        print(f"❌ S3 Upload Failed: {e}")
+        print(f"❌ Video S3 Upload Failed: {e}")
+        return None
+
+def upload_text_to_s3(text_content, s3_file_key):
+    """Uploads the raw transcript text directly to a specific folder in S3."""
+    try:
+        s3_client.put_object(
+            Bucket=BUCKET_NAME,
+            Key=s3_file_key,
+            Body=text_content.encode('utf-8'),
+            ContentType='text/plain'
+        )
+        return f"https://{BUCKET_NAME}.s3.{os.getenv('AWS_REGION')}.amazonaws.com/{s3_file_key}"
+    except Exception as e:
+        print(f"❌ Transcript S3 Upload Failed: {e}")
         return None
 
 def split_into_chunks(text, size=3):
@@ -115,7 +132,7 @@ class ChatRequest(BaseModel):
 
 @app.post("/api/upload-video")
 async def upload_and_process_video(file: UploadFile = File(...)):
-    """Handles video upload, S3 storage, Gemini processing, and OpenSearch indexing."""
+    """Handles video upload, S3 storage (video & transcript), Gemini processing, and OpenSearch indexing."""
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     
     try:
@@ -123,43 +140,73 @@ async def upload_and_process_video(file: UploadFile = File(...)):
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # 1. Permanent storage in AWS S3
-        s3_url = upload_to_s3(file_path, file.filename)
-        if not s3_url:
-            raise HTTPException(status_code=500, detail="Cloud storage upload failed.")
+        # Step 1: Upload Video to AWS S3 'videos' folder
+        video_s3_key = f"videos/{file.filename}"
+        video_s3_url = upload_file_to_s3(file_path, video_s3_key)
+        if not video_s3_url:
+            raise HTTPException(status_code=500, detail="Video cloud storage upload failed.")
 
-        # 2. Processing with Gemini Flash
+        # Step 2: Processing with Gemini 2.5 Flash to get Transcript
         video_file = client.files.upload(file=file_path)
         while video_file.state.name == "PROCESSING":
             time.sleep(5)
             video_file = client.files.get(name=video_file.name)
 
-        # 3. Generate Transcript
-        prompt = "Provide a full transcript with timestamps. Format: [MM:SS - MM:SS] Text."
+        prompt = "Provide a full transcript with timestamps in the exact ORIGINAL language spoken in the video. Do not translate. Format: [MM:SS - MM:SS] Text."
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=[video_file, prompt]
         )
+        transcript_text = response.text
 
-        # 4. Vectorize and Index
-        chunks = split_into_chunks(response.text)
+        # Step 3: Upload Transcript to AWS S3 'transcripts' folder
+        transcript_s3_key = f"transcripts/{file.filename}.txt"
+        transcript_s3_url = upload_text_to_s3(transcript_text, transcript_s3_key)
+
+        # Step 4: Chunking and Embedding using correct model and dimensions
+        chunks = split_into_chunks(transcript_text)
         for chunk in chunks:
-            embed = client.models.embed_content(model="text-embedding-004", contents=chunk)
+            if not chunk.strip(): continue
             
-            doc = {
-                "video_id": file.filename,
-                "text_chunk": chunk,
-                "timestamp": chunk[1:14] if chunk.startswith("[") else "00:00",
-                "s3_url": s3_url,
-                "embedding": embed.embeddings[0].values
-            }
             try:
+                result = client.models.embed_content(
+                    model="gemini-embedding-001", 
+                    contents=chunk,
+                    config=types.EmbedContentConfig(
+                        task_type="RETRIEVAL_DOCUMENT",
+                        output_dimensionality=768
+                    )
+                )
+                
+                vector = result.embeddings[0].values
+                if not vector:
+                    continue
+
+                # Step 5: Save embedded chunks to AWS OpenSearch
+                doc = {
+                    "video_id": file.filename,
+                    "text_chunk": chunk,
+                    "timestamp": chunk[1:14] if chunk.startswith("[") else "00:00",
+                    "video_s3_url": video_s3_url,
+                    "transcript_s3_url": transcript_s3_url,
+                    "embedding": vector
+                }
+                
                 opensearch_client.index(index=INDEX_NAME, body=doc)
-            except:
-                pass
+                time.sleep(0.5)
+                print(f"✅ Chunk indexed successfully!")
+                
+            except Exception as e:
+                print(f"⚠️ Chunk processing error: {e}")
+                time.sleep(2)
 
         os.remove(file_path)
-        return {"status": "success", "video_id": file.filename, "s3_url": s3_url}
+        return {
+            "status": "success", 
+            "video_id": file.filename, 
+            "video_s3_url": video_s3_url,
+            "transcript_s3_url": transcript_s3_url
+        }
 
     except Exception as e:
         if os.path.exists(file_path): os.remove(file_path)
@@ -169,13 +216,31 @@ async def upload_and_process_video(file: UploadFile = File(...)):
 async def ask_question(request: ChatRequest):
     """Retrieves relevant video context and generates an AI answer using Flash Lite."""
     try:
-        # 1. Embed Question
-        embed = client.models.embed_content(model="text-embedding-004", contents=request.question)
+        # Step 6 & 7: Generate embedding for student question
+        result = client.models.embed_content(
+            model="gemini-embedding-001", 
+            contents=request.question,
+            config=types.EmbedContentConfig(
+                task_type="RETRIEVAL_QUERY",
+                output_dimensionality=768
+            )
+        )
         
-        # 2. Search OpenSearch (RAG)
+        vector = result.embeddings[0].values
+        if not vector:
+            raise HTTPException(status_code=500, detail="AI Vector Error: Question embedding failed.")
+
+        # Step 8: Search similar embedded top 3 chunks using AWS OpenSearch
         search_query = {
             "size": 3,
-            "query": {"knn": {"embedding": {"vector": embed.embeddings[0].values, "k": 3}}}
+            "query": {
+                "knn": {
+                    "embedding": {
+                        "vector": vector, 
+                        "k": 3
+                    }
+                }
+            }
         }
         
         context = ""
@@ -185,13 +250,20 @@ async def ask_question(request: ChatRequest):
         except:
             context = "Context unavailable (DB Offline)."
 
-        # 3. Generate Answer with Gemini Flash Lite
-        system_instr = "Answer based ONLY on context. Include timestamps as: ⏱️ [Video Reference: MM:SS - MM:SS]"
+        # Step 9: Generate answer using Gemini with Sinhala language support
+        system_instr = """You are a helpful assistant that answers questions based on video transcripts.
+        - Answer ONLY based on the provided context
+        - If the question is in Sinhala, answer in Sinhala
+        - If the question is in English, answer in English
+        - Always include timestamps as: ⏱️ [Video Reference: MM:SS - MM:SS]
+        - If the answer is not in the context, say "I cannot find this information in the video"
+        """
         config = types.GenerateContentConfig(system_instruction=system_instr, temperature=0.0)
         
         history = "\n".join([f"{m.role}: {m.content}" for m in request.chat_history])
         final_prompt = f"Context: {context}\nHistory: {history}\nQuestion: {request.question}"
         
+        # Step 10: Answer with time stamps using Flash Lite
         answer = client.models.generate_content(
             model="gemini-2.5-flash-lite", 
             contents=final_prompt, 
