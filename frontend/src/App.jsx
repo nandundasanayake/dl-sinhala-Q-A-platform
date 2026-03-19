@@ -128,7 +128,7 @@ const handleUpload = async () => {
   // --- NEW: Function to parse and render clickable timestamps in chat ---
   const renderMessageContent = (content) => {
     // Regex to find the timestamp format sent by our backend
-    const regex = /(⏱️\s*\[Video Reference:\s*\d{2}:\d{2}\s*-\s*\d{2}:\d{2}\])/;
+    const regex = /(⏱️\s*\[▶ Play Video \(\d{2}:\d{2}\s*-\s*\d{2}:\d{2}\)\])/g;
     const parts = content.split(regex);
     
     return parts.map((part, index) => {
@@ -141,11 +141,11 @@ const handleUpload = async () => {
           <button 
             key={index}
             onClick={() => handleSeek(startTime)}
-            className="inline-flex items-center gap-1.5 bg-dopamine-light text-dopamine-accent px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-purple-200 transition-colors mt-2 border border-purple-200 shadow-sm"
-            title="Click to play from this time"
+            className="inline-flex items-center gap-1.5 bg-purple-100 text-purple-700 px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-purple-200 transition-colors mt-2 border border-purple-200 shadow-sm ml-2"
+            title={`Click to play video from ${startTime}`}
           >
             <PlayCircle className="w-4 h-4" />
-            Play Video at {startTime}
+            Play ({startTime})
           </button>
         );
       }
@@ -155,7 +155,7 @@ const handleUpload = async () => {
         <span key={index}>
           {part?.split('\n').map((line, i) => (
             <React.Fragment key={i}>
-              {line}
+              <span dangerouslySetInnerHTML={{ __html: line.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') }} />
               {i !== part.split('\n').length - 1 && <br />}
             </React.Fragment>
           ))}
