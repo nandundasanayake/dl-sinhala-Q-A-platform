@@ -191,7 +191,7 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="sm:max-w-md md:max-w-lg p-0 gap-0 overflow-hidden">
         {/* Header with gradient */}
-        <DialogHeader className="bg-gradient-to-r from-dopamine-dark to-purple-900 p-6">
+        <DialogHeader className="bg-dopamine-dark  p-6">
           <DialogTitle className="flex items-center gap-2 text-white text-xl">
             <div className="p-2 bg-white/10 rounded-lg">
               <Upload className="w-5 h-5 text-dopamine-accent" />
