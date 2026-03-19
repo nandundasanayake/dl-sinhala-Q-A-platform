@@ -4,12 +4,17 @@ import shutil
 import boto3
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles  # Add this
+from fastapi.responses import FileResponse    # Add this
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 from opensearchpy import OpenSearch, RequestsHttpConnection
 from pydantic import BaseModel
 from typing import List
+from moviepy import VideoFileClip
+from PIL import Image
+import numpy as np
 
 # Load environment variables from the .env file
 load_dotenv()
@@ -25,6 +30,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount static files directory to serve thumbnails
+os.makedirs("static/thumbnails", exist_ok=True)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # --- External Services Configuration ---
 
@@ -83,6 +92,85 @@ def setup_opensearch_index():
     except Exception as e:
         print(f"⚠️ OpenSearch Connection Warning: {e}")
 
+def get_video_duration(file_path):
+    """Get video duration using MoviePy."""
+    try:
+        clip = VideoFileClip(file_path)
+        duration = clip.duration
+        clip.close()  # Important to close and free resources
+        
+        # Format as MM:SS
+        minutes = int(duration // 60)
+        seconds = int(duration % 60)
+        return f"{minutes}:{seconds:02d}"
+    except Exception as e:
+        print(f"⚠️ Could not get video duration: {e}")
+        return "0:00"
+
+# def generate_thumbnail(file_path, output_path, time_offset=5):
+#     """Generate thumbnail from video at specified time offset."""
+#     try:
+#         clip = VideoFileClip(file_path)
+        
+#         # If video is shorter than time_offset, use middle of video
+#         if clip.duration < time_offset:
+#             time_offset = clip.duration / 2
+        
+#         # Get frame at specified time
+#         frame = clip.get_frame(time_offset)
+#         clip.close()
+        
+#         # Convert to PIL Image and save
+#         img = Image.fromarray(np.uint8(frame))
+#         # Resize to thumbnail size (320x180)
+#         img = img.resize((320, 180), Image.Resampling.LANCZOS)
+#         img.save(output_path, 'JPEG', quality=85)
+        
+#         return True
+#     except Exception as e:
+#         print(f"⚠️ Could not generate thumbnail: {e}")
+#         return False
+
+def generate_thumbnail(video_path, video_id, time_offset=5):
+    """Generate thumbnail from video and save locally."""
+    try:
+        # Create thumbnails directory if it doesn't exist
+        thumbnail_dir = "static/thumbnails"
+        os.makedirs(thumbnail_dir, exist_ok=True)
+        
+        # Generate thumbnail filename
+        thumbnail_filename = f"{video_id}.jpg"
+        thumbnail_path = os.path.join(thumbnail_dir, thumbnail_filename)
+        
+        # If thumbnail already exists, return the URL
+        if os.path.exists(thumbnail_path):
+            print(f"🖼️ Thumbnail already exists: {thumbnail_path}")
+            return f"/static/thumbnails/{thumbnail_filename}"
+        
+        # Generate new thumbnail using MoviePy
+        clip = VideoFileClip(video_path)
+        
+        # If video is shorter than time_offset, use middle of video
+        if clip.duration < time_offset:
+            time_offset = clip.duration / 2
+        
+        # Get frame at specified time
+        frame = clip.get_frame(time_offset)
+        clip.close()
+        
+        # Convert to PIL Image and save
+        img = Image.fromarray(np.uint8(frame))
+        # Resize to thumbnail size (320x180)
+        img = img.resize((320, 180), Image.Resampling.LANCZOS)
+        img.save(thumbnail_path, 'JPEG', quality=85)
+        
+        print(f"✅ Thumbnail generated: {thumbnail_path}")
+        return f"/static/thumbnails/{thumbnail_filename}"
+        
+    except Exception as e:
+        print(f"⚠️ Could not generate thumbnail: {e}")
+        return None
+
 def upload_file_to_s3(local_path, s3_file_key):
     """Uploads the video file to a specific folder in S3."""
     try:
@@ -134,11 +222,31 @@ class ChatRequest(BaseModel):
 async def upload_and_process_video(file: UploadFile = File(...)):
     """Handles video upload, S3 storage (video & transcript), Gemini processing, and OpenSearch indexing."""
     file_path = os.path.join(UPLOAD_DIR, file.filename)
+    thumbnail_path = os.path.join(UPLOAD_DIR, f"thumb_{file.filename}.jpg")
     
     try:
         # Save file locally for processing
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
+
+         # Get video duration using MoviePy
+        duration = get_video_duration(file_path)
+        print(f"📹 Video duration: {duration}")
+
+        # Generate thumbnail using MoviePy
+        # save locally
+        thumbnail_url = generate_thumbnail(file_path, file.filename)
+        print(f"🖼️ Thumbnail available at: {thumbnail_url}")
+
+        # save to s3
+        # thumbnail_generated = generate_thumbnail(file_path, thumbnail_path)
+        # thumbnail_url = None
+
+        # if thumbnail_generated:
+        #     # Upload thumbnail to S3
+        #     thumbnail_s3_key = f"thumbnails/{file.filename}.jpg"
+        #     thumbnail_url = upload_file_to_s3(thumbnail_path, thumbnail_s3_key)
+        #     print(f"🖼️ Thumbnail uploaded: {thumbnail_url}")
 
         # Step 1: Upload Video to AWS S3 'videos' folder
         video_s3_key = f"videos/{file.filename}"
@@ -205,11 +313,14 @@ async def upload_and_process_video(file: UploadFile = File(...)):
             "status": "success", 
             "video_id": file.filename, 
             "video_s3_url": video_s3_url,
-            "transcript_s3_url": transcript_s3_url
+            "transcript_s3_url": transcript_s3_url,
+            "thumbnail_url": thumbnail_url,
+            "duration": duration  # This will show on video cards
         }
 
     except Exception as e:
         if os.path.exists(file_path): os.remove(file_path)
+        # if os.path.exists(thumbnail_path): os.remove(thumbnail_path)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/chat")
