@@ -127,7 +127,11 @@ export const useVideoStore = create<VideoStore>()(
       loadVideos: async () => {
         set({ isLoading: true, error: null });
         try {
-          const response = await fetch(`${API_BASE_URL}/api/videos`);
+          const response = await fetch(`${API_BASE_URL}/api/videos`, {
+            headers: {
+              'ngrok-skip-browser-warning': 'true'
+            }
+          });
           
           if (!response.ok) {
             throw new Error('Failed to load videos');
@@ -174,7 +178,10 @@ export const useVideoStore = create<VideoStore>()(
           if (!video) return;
 
           const response = await fetch(`${API_BASE_URL}/api/videos/${encodeURIComponent(video.video_id)}`, {
-            method: 'DELETE'
+            method: 'DELETE',
+            headers: {
+              'ngrok-skip-browser-warning': 'true'
+            }
           });
 
           if (!response.ok) {

@@ -29,7 +29,7 @@ app = FastAPI(title="Enterprise Video RAG API", version="3.0")
 # Configure CORS to allow requests from the React frontend (Vite default port 5173)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "https://dl-sinhala-q-a-platform-o5cv8h2ds-nuwani-wijesekaras-projects.vercel.app"],
+    allow_origins=["http://localhost:5173", "https://dl-sinhala-q-a-platform.vercel.app", "https://intimidatory-divergently-yen.ngrok-free.dev"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
