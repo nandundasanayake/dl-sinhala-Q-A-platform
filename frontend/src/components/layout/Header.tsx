@@ -21,7 +21,7 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
   const navigate = useNavigate();
 
   return (
-    <header className="bg-dopamine-dark border-b border-gray-800 sticky top-0 z-50">
+    <header className="bg-sidebar border-b border-border sticky top-0 z-50">
       <div className="flex items-center justify-between h-16 px-4 sm:px-6">
         {/* Left section */}
         <div className="flex items-center gap-3 flex-1">
@@ -30,7 +30,7 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
               variant="ghost"
               size="icon"
               onClick={onMenuClick}
-              className="lg:hidden text-gray-300 hover:text-white hover:bg-dopamine-accent/20"
+              className="lg:hidden text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-white/10"
             >
               <Menu className="w-5 h-5" />
             </Button>
@@ -41,10 +41,10 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
             onClick={() => navigate('/dashboard')}
             className="flex items-center gap-2 cursor-pointer"
           >
-            <div className="w-8 h-8 rounded-lg bg-dopamine-accent flex items-center justify-center">
-              <span className="text-white font-bold text-lg">D</span>
+            <div className="w-8 h-8 rounded-lg bg-brand flex items-center justify-center">
+              <span className="text-brand-foreground font-bold text-lg">D</span>
             </div>
-            <span className="text-white font-semibold text-lg hidden sm:block">
+            <span className="text-sidebar-foreground font-semibold text-lg hidden sm:block">
               Dopamine AI
             </span>
           </div>
@@ -53,10 +53,10 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
         {/* Center - Search (hidden on mobile) */}
         <div className="hidden md:block flex-1 max-w-md">
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input
               placeholder="Search videos..."
-              className="w-full pl-9 bg-dopamine-dark/50 border-gray-700 text-white placeholder:text-gray-400 focus:border-dopamine-accent"
+              className="w-full pl-9 bg-background/10 border-border text-sidebar-foreground placeholder:text-muted-foreground focus:border-brand focus:ring-brand/20"
             />
           </div>
         </div>
@@ -67,7 +67,7 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
           <Button
             variant="ghost"
             size="icon"
-            className="md:hidden text-gray-300 hover:text-white hover:bg-dopamine-accent/20"
+            className="md:hidden text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-white/10"
           >
             <Search className="w-5 h-5" />
           </Button>
@@ -76,10 +76,10 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
           <Button
             variant="ghost"
             size="icon"
-            className="relative text-gray-300 hover:text-white hover:bg-dopamine-accent/20"
+            className="relative text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-white/10"
           >
             <Bell className="w-5 h-5" />
-            <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-500 rounded-full ring-2 ring-dopamine-dark" />
+            <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-destructive rounded-full ring-2 ring-sidebar" />
           </Button>
 
           {/* User menu */}
@@ -87,25 +87,31 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
             <DropdownMenuTrigger asChild>
               <Button
                 variant="ghost"
-                className="flex items-center gap-2 text-gray-300 hover:text-white hover:bg-dopamine-accent/20"
+                className="flex items-center gap-2 text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-white/10"
               >
-                <div className="w-8 h-8 rounded-full bg-dopamine-accent flex items-center justify-center">
-                  <User className="w-4 h-4 text-white" />
+                <div className="w-8 h-8 rounded-full bg-brand flex items-center justify-center">
+                  <User className="w-4 h-4 text-brand-foreground" />
                 </div>
-                <span className="hidden sm:block text-sm">John Doe</span>
+                <span className="hidden sm:block text-sm text-sidebar-foreground">John Doe</span>
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56">
-              <DropdownMenuLabel>My Account</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => navigate('/profile')}>
+            <DropdownMenuContent align="end" className="w-56 bg-card border-border">
+              <DropdownMenuLabel className="text-foreground">My Account</DropdownMenuLabel>
+              <DropdownMenuSeparator className="bg-border" />
+              <DropdownMenuItem 
+                onClick={() => navigate('/profile')}
+                className="text-foreground hover:bg-accent focus:bg-accent cursor-pointer"
+              >
                 Profile
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => navigate('/settings')}>
+              <DropdownMenuItem 
+                onClick={() => navigate('/settings')}
+                className="text-foreground hover:bg-accent focus:bg-accent cursor-pointer"
+              >
                 Settings
               </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem className="text-red-600">
+              <DropdownMenuSeparator className="bg-border" />
+              <DropdownMenuItem className="text-destructive hover:bg-destructive/10 focus:bg-destructive/10 cursor-pointer">
                 Log out
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -116,10 +122,10 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
       {/* Mobile search bar (hidden by default, can be toggled) */}
       <div className="md:hidden px-4 pb-3">
         <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input
             placeholder="Search videos..."
-            className="w-full pl-9 bg-dopamine-dark/50 border-gray-700 text-white placeholder:text-gray-400"
+            className="w-full pl-9 bg-background/10 border-border text-sidebar-foreground placeholder:text-muted-foreground"
           />
         </div>
       </div>

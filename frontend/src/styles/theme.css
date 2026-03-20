@@ -1,0 +1,50 @@
+:root {
+    /* Core surfaces */
+    --background: 0 0% 98%; /* #FAFAFA */
+    --foreground: 0 0% 3.9%; /* #0A0A0A */
+  
+    /* Components */
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 3.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 3.9%;
+  
+    /* Buttons */
+    --primary: 0 0% 3.9%; /* primary buttons: #0A0A0A */
+    --primary-foreground: 0 0% 98%;
+  
+    --secondary: 259 62% 52.5%; /* button colour: #6A3BD1 */
+    --secondary-foreground: 0 0% 98%;
+  
+    /* States */
+    --accent: 275 89.5% 96.3%; /* select row: #F7EDFE */
+    --accent-foreground: 0 0% 3.9%;
+  
+    --muted: 275 89.5% 96.3%;
+    --muted-foreground: 0 0% 45.1%;
+  
+    --border: 0 0% 89.8%;
+    --input: 0 0% 89.8%;
+    --ring: 259 62% 52.5%; /* focus ring: #6A3BD1 */
+  
+    /* Custom semantic tokens */
+    --sidebar: 261 69.8% 10.4%; /* #15082D */
+    --sidebar-foreground: 0 0% 98%; /* #FAFAFA */
+  
+    --brand: 259 62% 52.5%; /* #6A3BD1 */
+    --brand-foreground: 0 0% 98%;
+  
+    --selection: 275 89.5% 96.3%; /* #F7EDFE */
+    --selection-foreground: 0 0% 3.9%; /* #0A0A0A */
+  
+    --radius: 0.5rem;
+
+
+     /* Add destructive colors */
+    --destructive: 0 84.2% 60.2%;     /* Bright red */
+    --destructive-foreground: 0 0% 98%; /* White text */
+    
+    /* Alternative softer red */
+    --destructive-soft: 0 65% 85%;     /* Light red background */
+    --destructive-soft-foreground: 0 70% 35%; /* Dark red text */
+  }

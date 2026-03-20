@@ -2,6 +2,55 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-  background-color: #f9fafb;
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif;
+  }
+
+  .font-sinhala {
+    font-family: "Abhaya Libre", ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  }
+
+  /* Back-compat: many screens still use hard-coded light utilities. */
+  .dark .bg-white {
+    @apply bg-background;
+  }
+  .dark .bg-gray-50,
+  .dark .bg-gray-100 {
+    @apply bg-muted;
+  }
+  .dark .border-gray-200,
+  .dark .border-gray-300,
+  .dark .divide-gray-200,
+  .dark .divide-gray-100 {
+    @apply border-border;
+  }
+  .dark .text-gray-900,
+  .dark .text-gray-800,
+  .dark .text-gray-700 {
+    @apply text-foreground;
+  }
+  .dark .text-gray-600,
+  .dark .text-gray-500,
+  .dark .text-gray-400 {
+    @apply text-muted-foreground;
+  }
+
+  .dark .hover\:bg-gray-50:hover,
+  .dark .hover\:bg-gray-100:hover {
+    @apply bg-accent;
+  }
+
+  /* Many primary buttons were hard-coded as black/white. */
+  .dark .bg-black {
+    @apply bg-primary;
+  }
+  .dark .text-white {
+    @apply text-primary-foreground;
+  }
 }
