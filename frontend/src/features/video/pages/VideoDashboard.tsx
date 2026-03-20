@@ -173,10 +173,14 @@ export const VideoDashboard: React.FC = () => {
         <div className="max-w-7xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-brand flex items-center justify-center">
-                <PlayCircle className="w-6 h-6 text-brand-foreground" />
+              <div className="w-10 h-10 rounded-lg bg-white p-1 flex items-center justify-center">
+                <img 
+                  src="/logo_new.png" 
+                  alt="Dopamine Lite Logo" 
+                  className="w-full h-full object-cover"
+                />
               </div>
-              <h1 className="text-xl font-bold text-sidebar-foreground">Video Library</h1>
+              <h1 className="text-xl font-bold text-sidebar-foreground">Dopamine Lite</h1>
             </div>
             
             <Button

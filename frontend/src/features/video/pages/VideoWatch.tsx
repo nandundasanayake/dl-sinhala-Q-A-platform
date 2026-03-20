@@ -723,6 +723,7 @@ export const VideoWatch: React.FC = () => {
   const handleSeek = (timeString: string) => {
     const [minutes, seconds] = timeString.split(':').map(Number);
     const totalSeconds = (minutes * 60) + seconds;
+    console.log("Seeked: ", totalSeconds);
     setCurrentVideoTime(totalSeconds);
   };
 
@@ -780,7 +781,7 @@ export const VideoWatch: React.FC = () => {
     setIsTyping(true);
 
     try {
-      const response = await fetch('http://localhost:8000/api/chat', {
+      const response = await fetch(`${API_BASE_URL}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
