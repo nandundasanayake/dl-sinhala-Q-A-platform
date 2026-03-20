@@ -15,7 +15,7 @@ from typing import List
 from moviepy import VideoFileClip
 from PIL import Image
 import numpy as np
-
+from starlette.middleware.base import BaseHTTPMiddleware 
 from botocore.client import Config
 from fastapi.responses import JSONResponse
 import urllib.parse
@@ -25,6 +25,13 @@ load_dotenv()
 
 # Initialize the FastAPI application
 app = FastAPI(title="Enterprise Video RAG API", version="3.0")
+
+@app.middleware("http")
+async def add_ngrok_header(request, call_next):
+    """Adds ngrok-skip-browser-warning header to all responses"""
+    response = await call_next(request)
+    response.headers["ngrok-skip-browser-warning"] = "true"
+    return response
 
 # Configure CORS to allow requests from the React frontend (Vite default port 5173)
 app.add_middleware(
@@ -143,7 +150,8 @@ def generate_thumbnail(video_path, video_id, time_offset=5):
         os.makedirs(thumbnail_dir, exist_ok=True)
         
         # Generate thumbnail filename
-        thumbnail_filename = f"{video_id}.jpg"
+        thumbnail_filename = video_id.replace('.mp4', '.jpg').replace('.mov', '.jpg').replace('.avi', '.jpg')
+
         thumbnail_path = os.path.join(thumbnail_dir, thumbnail_filename)
         
         # If thumbnail already exists, return the URL
@@ -681,9 +689,41 @@ async def delete_video(video_id: str):
         print(f"Error deleting video: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/health")
-def health():
-    return {"status": "healthy"}
+@app.get("/api/thumbnail/{video_id:path}")
+async def get_thumbnail(video_id: str):
+    """Serve thumbnails with proper encoding and headers"""
+    try:
+        # URL decode the video_id
+        video_id = urllib.parse.unquote(video_id)
+        
+        # Create thumbnail filename
+        thumbnail_filename = video_id.replace('.mp4', '.jpg')
+        thumbnail_path = os.path.join("static", "thumbnails", thumbnail_filename)
+        
+        print(f"🔍 Serving thumbnail: {thumbnail_path}")
+        
+        # Check if file exists
+        if not os.path.exists(thumbnail_path):
+            print(f"❌ Thumbnail not found: {thumbnail_path}")
+            # List available thumbnails for debugging
+            if os.path.exists(f"static/thumbnails"):
+                print(f"📁 Available thumbnails: {os.listdir('static/thumbnails')}")
+            raise HTTPException(status_code=404, detail="Thumbnail not found")
+        
+        # Return the image with the required header
+        return FileResponse(
+            thumbnail_path,
+            media_type="image/jpeg",
+            headers={
+                "ngrok-skip-browser-warning": "true",
+                "Cache-Control": "public, max-age=3600"
+            }
+        )
+    except Exception as e:
+        print(f"❌ Error serving thumbnail: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 
 # import os
 # import time

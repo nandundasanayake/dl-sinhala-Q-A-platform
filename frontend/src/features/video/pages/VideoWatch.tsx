@@ -619,6 +619,8 @@ import { Button } from '@/components/ui/button';
 import { VideoPlayer } from '../components/VideoPlayer';
 import { useVideoStore } from '@/store/video.store';
 
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+
 interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -659,7 +661,7 @@ export const VideoWatch: React.FC = () => {
       try {
         console.log('Fetching signed URL for:', video.video_id);
         const response = await fetch(
-          `http://localhost:8000/api/videos/${encodeURIComponent(video.video_id)}/signed-url`
+          `${API_BASE_URL}/api/videos/${encodeURIComponent(video.video_id)}/signed-url`
         );
         
         if (response.ok) {
