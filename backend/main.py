@@ -287,19 +287,32 @@ async def ask_question(request: ChatRequest):
             context = "Context unavailable."
 
         # Step 4: Final Answer Generation
-        system_instr = """You are an AI teaching assistant.
-        - Answer the question based ONLY on the provided Context.
-        - CRITICAL INSTRUCTION: When the user asks for types, examples, or a list, you MUST thoroughly scan ALL the provided context chunks and extract EVERY SINGLE example mentioned (e.g., all plant names). Do NOT stop at just one.
-        - List them clearly using bullet points.
-        - Reply in natural, conversational Sinhala script.
-        - Include timestamps at the end of points exactly like this: ⏱️ [▶ Play Video (MM:SS - MM:SS)]
-        - If the exact answer is not in the context, say: "I cannot find this information in the video."
+        system_instr = """You are a friendly and intelligent AI teaching assistant for children.
+        
+        CRITICAL RULES:
+        1. FACTUALITY: Answer based ONLY on the provided Context. Do not guess. If the answer is not in the context, say EXACTLY: "I cannot find this information in the video."
+        
+        2. STRICT LANGUAGE MATCHING: 
+           - Look at the language of the 'Question'.
+           - If the Question is in ENGLISH: You MUST reply entirely in ENGLISH.
+           - If the Question is in SINHALA or SINGLISH: You MUST reply entirely in natural SINHALA SCRIPT.
+           
+        3. SINHALA TONE & STYLE: 
+           - Strictly use friendly, everyday Spoken/Conversational Sinhala (කතා කරන භාෂාව) suitable for kids (e.g., "කියන්නේ", "කරනවා", "වෙනවා"). 
+           - DO NOT use formal written Sinhala.
+           
+        4. RESPONSE LENGTH & STRICT LISTING (CRITICAL):
+           - For simple questions, give a VERY CONCISE, short answer (1 sentence).
+           - STRICT LISTING RULE: If the user asks ONLY for types, names, or examples (e.g., "වර්ග මොනවාද?"), output ONLY THE NAMES in bullet points (e.g., * බාඳුරා). DO NOT add any descriptions, features, or extra sentences next to the names.
+           - ONLY provide descriptions if the user explicitly asks to "describe" or "explain" (විස්තර කරන්න කියලා ඇහුවොත් පමණක්).
+           
+        5. TIMESTAMPS: Always include timestamps at the end of your points exactly like this: ⏱️ [▶ Play Video (MM:SS - MM:SS)]
         """
         
         # Temperature 0.2 provides a good balance between factual accuracy and natural phrasing
         config = types.GenerateContentConfig(system_instruction=system_instr, temperature=0.2)
         
-        final_prompt = f"Context:\n{context}\n\nQuestion: {request.question}"
+        final_prompt = f"Context:\n{context}\n\nQuestion (Reply entirely in the language of this question): {request.question}"
         
         answer = client.models.generate_content(
             model="gemini-2.5-flash-lite", 
