@@ -300,6 +300,7 @@ interface VideoPlayerProps {
   onTimeUpdate?: (currentTime: number) => void;
   onSeek?: (time: number) => void;
   onError?: (error: string) => void;
+  seekTo?: number | null;
   className?: string;
 }
 
@@ -309,6 +310,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   onTimeUpdate,
   onSeek,
   onError,
+  seekTo,
   className,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -325,8 +327,29 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [isHovering, setIsHovering] = useState(false);
   const [videoError, setVideoError] = useState(false);
   const [loadAttempts, setLoadAttempts] = useState(0);
+  const [lastSeekTo, setLastSeekTo] = useState<number | null>(null);
 
   let controlsTimeout: NodeJS.Timeout;
+
+  // Handle seeking from parent component
+  useEffect(() => {
+    if (seekTo !== null && seekTo !== undefined && seekTo !== lastSeekTo && videoRef.current) {
+      console.log('🎯 Seeking video to:', seekTo);
+      videoRef.current.currentTime = seekTo;
+      setCurrentTime(seekTo);
+      setLastSeekTo(seekTo);
+      onSeek?.(seekTo);
+      
+      // Auto-play after seeking
+      if (videoRef.current.paused) {
+        videoRef.current.play().catch(err => {
+          console.error('Play after seek failed:', err);
+        });
+        setIsPlaying(true);
+      }
+    }
+  }, [seekTo, lastSeekTo, onSeek]);
+
 
   useEffect(() => {
     const video = videoRef.current;
@@ -464,6 +487,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     videoRef.current.currentTime = time;
     setCurrentTime(time);
     onSeek?.(time);
+    setLastSeekTo(time);
   };
 
   const toggleFullscreen = () => {

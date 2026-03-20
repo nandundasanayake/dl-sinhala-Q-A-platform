@@ -146,7 +146,7 @@ export const useVideoStore = create<VideoStore>()(
             title: v.title,
             uploadedAt: new Date(v.uploaded_at),
             duration: v.duration || '0:00',
-            thumbnail: v.video_id,
+            thumbnail: v.thumbnail_url,
             status: 'ready',
             s3Url: v.video_url,
             transcriptUrl: v.transcript_url,

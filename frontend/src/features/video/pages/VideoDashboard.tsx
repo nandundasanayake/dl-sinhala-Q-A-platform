@@ -173,9 +173,9 @@ export const VideoDashboard: React.FC = () => {
         <div className="max-w-7xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-white p-1 flex items-center justify-center">
+              <div className="w-10 h-10 rounded-lg bg-white flex items-center justify-center">
                 <img 
-                  src="/logo_new.png" 
+                  src="/logo.jpeg" 
                   alt="Dopamine Lite Logo" 
                   className="w-full h-full object-cover"
                 />

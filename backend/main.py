@@ -1,4 +1,5 @@
 import os
+import io
 import time
 import shutil
 import boto3
@@ -142,46 +143,102 @@ def get_video_duration(file_path):
 #         print(f"⚠️ Could not generate thumbnail: {e}")
 #         return False
 
-def generate_thumbnail(video_path, video_id, time_offset=5):
-    """Generate thumbnail from video and save locally."""
-    try:
-        # Create thumbnails directory if it doesn't exist
-        thumbnail_dir = "static/thumbnails"
-        os.makedirs(thumbnail_dir, exist_ok=True)
+# def generate_thumbnail(video_path, video_id, time_offset=5):
+#     """Generate thumbnail from video and save locally."""
+#     try:
+#         # Create thumbnails directory if it doesn't exist
+#         thumbnail_dir = "static/thumbnails"
+#         os.makedirs(thumbnail_dir, exist_ok=True)
         
+#         # Generate thumbnail filename
+#         thumbnail_filename = video_id.replace('.mp4', '.jpg').replace('.mov', '.jpg').replace('.avi', '.jpg')
+
+#         thumbnail_path = os.path.join(thumbnail_dir, thumbnail_filename)
+        
+#         # If thumbnail already exists, return the URL
+#         if os.path.exists(thumbnail_path):
+#             print(f"🖼️ Thumbnail already exists: {thumbnail_path}")
+#             return f"/static/thumbnails/{thumbnail_filename}"
+        
+#         # Generate new thumbnail using MoviePy
+#         clip = VideoFileClip(video_path)
+        
+#         # If video is shorter than time_offset, use middle of video
+#         if clip.duration < time_offset:
+#             time_offset = clip.duration / 2
+        
+#         # Get frame at specified time
+#         frame = clip.get_frame(time_offset)
+#         clip.close()
+        
+#         # Convert to PIL Image and save
+#         img = Image.fromarray(np.uint8(frame))
+#         # Resize to thumbnail size (320x180)
+#         img = img.resize((320, 180), Image.Resampling.LANCZOS)
+#         img.save(thumbnail_path, 'JPEG', quality=85)
+        
+#         print(f"✅ Thumbnail generated: {thumbnail_path}")
+#         return f"/static/thumbnails/{thumbnail_filename}"
+        
+#     except Exception as e:
+#         print(f"⚠️ Could not generate thumbnail: {e}")
+#         return None
+
+
+
+
+def generate_and_upload_thumbnail(video_path, video_id, time_offset=5):
+    """Generate thumbnail from video and upload to S3."""
+    try:
         # Generate thumbnail filename
         thumbnail_filename = video_id.replace('.mp4', '.jpg').replace('.mov', '.jpg').replace('.avi', '.jpg')
-
-        thumbnail_path = os.path.join(thumbnail_dir, thumbnail_filename)
+        thumbnail_s3_key = f"thumbnails/{thumbnail_filename}"
         
-        # If thumbnail already exists, return the URL
-        if os.path.exists(thumbnail_path):
-            print(f"🖼️ Thumbnail already exists: {thumbnail_path}")
-            return f"/static/thumbnails/{thumbnail_filename}"
+        # Check if thumbnail already exists in S3
+        try:
+            s3_client.head_object(Bucket=BUCKET_NAME, Key=thumbnail_s3_key)
+            print(f"🖼️ Thumbnail already exists in S3: {thumbnail_s3_key}")
+            thumbnail_url = f"https://{BUCKET_NAME}.s3.{os.getenv('AWS_REGION')}.amazonaws.com/{thumbnail_s3_key}"
+            return thumbnail_url
+        except:
+            pass
         
         # Generate new thumbnail using MoviePy
         clip = VideoFileClip(video_path)
         
-        # If video is shorter than time_offset, use middle of video
         if clip.duration < time_offset:
             time_offset = clip.duration / 2
         
-        # Get frame at specified time
         frame = clip.get_frame(time_offset)
         clip.close()
         
-        # Convert to PIL Image and save
+        # Convert to PIL Image
         img = Image.fromarray(np.uint8(frame))
-        # Resize to thumbnail size (320x180)
         img = img.resize((320, 180), Image.Resampling.LANCZOS)
-        img.save(thumbnail_path, 'JPEG', quality=85)
         
-        print(f"✅ Thumbnail generated: {thumbnail_path}")
-        return f"/static/thumbnails/{thumbnail_filename}"
+        # Save to bytes buffer
+        buffer = io.BytesIO()
+        img.save(buffer, format='JPEG', quality=85)
+        buffer.seek(0)
+        
+        # Upload to S3
+        s3_client.put_object(
+            Bucket=BUCKET_NAME,
+            Key=thumbnail_s3_key,
+            Body=buffer.getvalue(),
+            ContentType='image/jpeg'
+        )
+        
+        thumbnail_url = f"https://{BUCKET_NAME}.s3.{os.getenv('AWS_REGION')}.amazonaws.com/{thumbnail_s3_key}"
+        print(f"✅ Thumbnail uploaded to S3: {thumbnail_url}")
+        
+        return thumbnail_url
         
     except Exception as e:
         print(f"⚠️ Could not generate thumbnail: {e}")
         return None
+    
+
 
 def upload_file_to_s3(local_path, s3_file_key):
     """Uploads binary files (videos) to AWS S3."""
@@ -258,7 +315,7 @@ async def upload_and_process_video(file: UploadFile = File(...)):
 
         # Generate thumbnail using MoviePy
         # save locally
-        thumbnail_url = generate_thumbnail(file_path, file.filename)
+        thumbnail_url = generate_and_upload_thumbnail(file_path, file.filename)
         print(f"🖼️ Thumbnail available at: {thumbnail_url}")
 
         # save to s3
@@ -498,13 +555,19 @@ async def list_videos():
                     transcript_url = None
                 
                 # Check for thumbnail
-                thumbnail_filename = f"{video_filename}.jpg"
-                thumbnail_url = f"/static/thumbnails/{thumbnail_filename}"
+                # thumbnail_filename = f"{video_filename}.jpg"
+                # thumbnail_url = f"/static/thumbnails/{thumbnail_filename}"
+
+                # Thumbnail s3 bucket
+                thumbnail_filename = video_filename.replace('.mp4', '.jpg').replace('.mov', '.jpg').replace('.avi', '.jpg')
+                thumbnail_s3_key = f"thumbnails/{thumbnail_filename}"
+
+                thumbnail_url = f"https://{BUCKET_NAME}.s3.{os.getenv('AWS_REGION')}.amazonaws.com/{thumbnail_s3_key}"
                 
                 # Check if thumbnail exists locally
-                thumbnail_path = os.path.join("static/thumbnails", thumbnail_filename)
-                if not os.path.exists(thumbnail_path):
-                    thumbnail_url = None
+                # thumbnail_path = os.path.join("static/thumbnails", thumbnail_filename)
+                # if not os.path.exists(thumbnail_path):
+                #     thumbnail_url = None
                 
                 # Get video duration from OpenSearch (if available)
                 duration = "0:00"

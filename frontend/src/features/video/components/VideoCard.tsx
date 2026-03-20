@@ -34,7 +34,12 @@ export const VideoCard: React.FC<VideoCardProps> = ({
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const { removeVideo } = useVideoStore();
+  
 
+  useEffect(() => {
+    setImageUrl(String(thumbnail));
+    console.log("new thumbnail URL", imageUrl)
+  }, [imageUrl]);
 
   // const thumbnailUrl = thumbnail?.startsWith('/static') 
   //   ? `${API_BASE_URL}${thumbnail}`
@@ -42,50 +47,50 @@ export const VideoCard: React.FC<VideoCardProps> = ({
 
 
   // ✅ Build thumbnail URL using the API endpoint
-  const getThumbnailUrl = () => {
-    if (!thumbnail) return null;
+  // const getThumbnailUrl = () => {
+  //   if (!thumbnail) return null;
 
-    console.log("thumb", thumbnail);
+  //   console.log("thumb", thumbnail);
     
-    // If thumbnail is a video_id or filename
-    const videoId = thumbnail;
-    return `${API_BASE_URL}/api/thumbnail/${encodeURIComponent(videoId)}`;
-  };
+  //   // If thumbnail is a video_id or filename
+  //   const videoId = thumbnail;
+  //   return `${API_BASE_URL}/api/thumbnail/${encodeURIComponent(videoId)}`;
+  // };
 
-  const thumbnailApiUrl = getThumbnailUrl();
+  // const thumbnailApiUrl = getThumbnailUrl();
 
-  console.log("🖼️ Thumbnail URL:", thumbnailApiUrl); // Debug
+  // console.log("🖼️ Thumbnail URL:", thumbnailApiUrl); // Debug
 
-  useEffect(() => {
-    if (!thumbnailApiUrl) {
-      setImageError(true);
-      return;
-    }
+  // useEffect(() => {
+  //   if (!thumbnailApiUrl) {
+  //     setImageError(true);
+  //     return;
+  //   }
 
-    setIsLoadingImage(true);
+  //   setIsLoadingImage(true);
     
-    fetch(thumbnailApiUrl, {
-      headers: {
-        'ngrok-skip-browser-warning': 'true'
-      }
-    })
-      .then(response => {
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-        return response.blob();
-      })
-      .then(blob => {
-        const url = URL.createObjectURL(blob);
-        setImageUrl(url);
-        setIsLoadingImage(false);
-      })
-      .catch(error => {
-        console.error('Failed to load thumbnail:', error);
-        setImageError(true);
-        setIsLoadingImage(false);
-      });
-  }, [thumbnailApiUrl]);
+  //   fetch(thumbnailApiUrl, {
+  //     headers: {
+  //       'ngrok-skip-browser-warning': 'true'
+  //     }
+  //   })
+  //     .then(response => {
+  //       if (!response.ok) {
+  //         throw new Error(`HTTP ${response.status}`);
+  //       }
+  //       return response.blob();
+  //     })
+  //     .then(blob => {
+  //       const url = URL.createObjectURL(blob);
+  //       setImageUrl(url);
+  //       setIsLoadingImage(false);
+  //     })
+  //     .catch(error => {
+  //       console.error('Failed to load thumbnail:', error);
+  //       setImageError(true);
+  //       setIsLoadingImage(false);
+  //     });
+  // }, [thumbnailApiUrl]);
 
 
   const handleMenuClick = (e: React.MouseEvent) => {

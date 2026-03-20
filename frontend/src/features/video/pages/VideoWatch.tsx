@@ -638,7 +638,7 @@ export const VideoWatch: React.FC = () => {
   const [videoError, setVideoError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isFetchingUrl, setIsFetchingUrl] = useState(false);
-  
+  const [seekToTime, setSeekToTime] = useState<number | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const video = getVideoById(videoId || '');
 
@@ -661,8 +661,11 @@ export const VideoWatch: React.FC = () => {
       try {
         console.log('Fetching signed URL for:', video.video_id);
         const response = await fetch(
-          `${API_BASE_URL}/api/videos/${encodeURIComponent(video.video_id)}/signed-url`
-        );
+          `${API_BASE_URL}/api/videos/${encodeURIComponent(video.video_id)}`,
+          {
+            headers: {
+              'ngrok-skip-browser-warning': 'true'
+          }});
         
         if (response.ok) {
           const data = await response.json();
@@ -724,7 +727,13 @@ export const VideoWatch: React.FC = () => {
     const [minutes, seconds] = timeString.split(':').map(Number);
     const totalSeconds = (minutes * 60) + seconds;
     console.log("Seeked: ", totalSeconds);
+    setSeekToTime(totalSeconds);
     setCurrentVideoTime(totalSeconds);
+  };
+
+  const handleVideoSeek = (time: number) => {
+    console.log("Video seeked to:", time);
+    setCurrentVideoTime(time);
   };
 
   const renderMessageContent = (content: string) => {
@@ -880,7 +889,8 @@ export const VideoWatch: React.FC = () => {
             <VideoPlayer
               src={video.s3Url || ''}
               title={video.title}
-              onSeek={(time) => setCurrentVideoTime(time)}
+              onSeek={handleVideoSeek}
+              seekTo={seekToTime}
               className="aspect-video"
               onError={(error) => {
                 console.error('Video player error:', error);
