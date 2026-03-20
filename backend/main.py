@@ -37,7 +37,7 @@ async def add_ngrok_header(request, call_next):
 # Configure CORS to allow requests from the React frontend (Vite default port 5173)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "https://dl-sinhala-q-a-platform.vercel.app", "https://intimidatory-divergently-yen.ngrok-free.dev"],
+    allow_origins=["http://localhost:5173", "https://dl-sinhala-q-a-platform.vercel.app", "https://intimidatory-divergently-yen.ngrok-free.dev",],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -297,6 +297,20 @@ class ChatRequest(BaseModel):
     chat_history: List[ChatMessage] = []
 
 # --- API Endpoints ---
+
+
+@app.get("/")
+async def root():
+    return {
+        "message": "Video RAG API is running",
+        "status": "healthy",
+        "endpoints": [
+            "/health",
+            "/api/videos",
+            "/api/chat",
+            "/api/upload-video"
+        ]
+    }
 
 @app.post("/api/upload-video")
 async def upload_and_process_video(file: UploadFile = File(...)):
