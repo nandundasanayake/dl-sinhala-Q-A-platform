@@ -35,11 +35,13 @@ export const VideoCard: React.FC<VideoCardProps> = ({
   const [isDeleting, setIsDeleting] = useState(false);
   const { removeVideo } = useVideoStore();
   
+  
+  const thumbnailUrl = thumbnail;
 
-  useEffect(() => {
-    setImageUrl(String(thumbnail));
-    console.log("new thumbnail URL", imageUrl)
-  }, [imageUrl]);
+  // useEffect(() => {
+  //   setImageUrl(String(thumbnail));
+  //   console.log("new thumbnail URL", imageUrl)
+  // }, [imageUrl]);
 
   // const thumbnailUrl = thumbnail?.startsWith('/static') 
   //   ? `${API_BASE_URL}${thumbnail}`
@@ -235,7 +237,7 @@ export const VideoCard: React.FC<VideoCardProps> = ({
         className="bg-card rounded-xl border border-border overflow-hidden hover:shadow-lg transition-all cursor-pointer hover:border-brand/50"
       >
         <div className="relative aspect-video bg-muted">
-          {/* {thumbnailUrl && !imageError ? (
+          {thumbnailUrl && !imageError ? (
             <img
               src={thumbnailUrl}
               alt={title}
@@ -251,8 +253,8 @@ export const VideoCard: React.FC<VideoCardProps> = ({
                 <PlayCircle className="w-12 h-12 text-brand/50" />
               )}
             </div>
-          )} */}
-          {isLoadingImage ? (
+          )}
+          {/* {isLoadingImage ? (
             <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-accent to-accent/50">
               <div className="w-8 h-8 border-2 border-brand/30 border-t-brand rounded-full animate-spin" />
             </div>
@@ -272,7 +274,7 @@ export const VideoCard: React.FC<VideoCardProps> = ({
                 <PlayCircle className="w-12 h-12 text-brand/50" />
               )}
             </div>
-          )}
+          )} */}
           
           {duration !== '0:00' && (
             <div className="absolute bottom-2 right-2 bg-sidebar/70 text-sidebar-foreground text-xs px-2 py-1 rounded-md backdrop-blur-sm">
