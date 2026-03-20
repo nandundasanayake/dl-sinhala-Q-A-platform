@@ -4,6 +4,8 @@ import { formatDistanceToNow } from 'date-fns';
 import { cn } from '@/lib/utils';
 import { useVideoStore } from '@/store/video.store';
 
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+
 interface VideoCardProps {
   id: string;
   title: string;
@@ -32,7 +34,7 @@ export const VideoCard: React.FC<VideoCardProps> = ({
   const { removeVideo } = useVideoStore();
 
   const thumbnailUrl = thumbnail?.startsWith('/static') 
-    ? `http://localhost:8000${thumbnail}`
+    ? `${API_BASE_URL}${thumbnail}`
     : thumbnail;
 
   const handleMenuClick = (e: React.MouseEvent) => {
