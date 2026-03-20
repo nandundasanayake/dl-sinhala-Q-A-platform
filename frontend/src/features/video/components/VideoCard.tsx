@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { PlayCircle, Clock, ImageOff, Plus, MoreVertical, Trash2, X } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { cn } from '@/lib/utils';
@@ -28,14 +28,65 @@ export const VideoCard: React.FC<VideoCardProps> = ({
   isFirst = false,
 }) => {
   const [imageError, setImageError] = useState(false);
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [isLoadingImage, setIsLoadingImage] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const { removeVideo } = useVideoStore();
 
-  const thumbnailUrl = thumbnail?.startsWith('/static') 
-    ? `${API_BASE_URL}${thumbnail}`
-    : thumbnail;
+
+  // const thumbnailUrl = thumbnail?.startsWith('/static') 
+  //   ? `${API_BASE_URL}${thumbnail}`
+  //   : thumbnail;
+
+
+  // ✅ Build thumbnail URL using the API endpoint
+  const getThumbnailUrl = () => {
+    if (!thumbnail) return null;
+
+    console.log("thumb", thumbnail);
+    
+    // If thumbnail is a video_id or filename
+    const videoId = thumbnail;
+    return `${API_BASE_URL}/api/thumbnail/${encodeURIComponent(videoId)}`;
+  };
+
+  const thumbnailApiUrl = getThumbnailUrl();
+
+  console.log("🖼️ Thumbnail URL:", thumbnailApiUrl); // Debug
+
+  useEffect(() => {
+    if (!thumbnailApiUrl) {
+      setImageError(true);
+      return;
+    }
+
+    setIsLoadingImage(true);
+    
+    fetch(thumbnailApiUrl, {
+      headers: {
+        'ngrok-skip-browser-warning': 'true'
+      }
+    })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        return response.blob();
+      })
+      .then(blob => {
+        const url = URL.createObjectURL(blob);
+        setImageUrl(url);
+        setIsLoadingImage(false);
+      })
+      .catch(error => {
+        console.error('Failed to load thumbnail:', error);
+        setImageError(true);
+        setIsLoadingImage(false);
+      });
+  }, [thumbnailApiUrl]);
+
 
   const handleMenuClick = (e: React.MouseEvent) => {
     e.stopPropagation(); // Prevent card click
@@ -46,6 +97,7 @@ export const VideoCard: React.FC<VideoCardProps> = ({
     e.stopPropagation(); // Prevent card click
     setShowMenu(false);
     setShowDeleteConfirm(true);
+  
   };
 
   const handleCancelDelete = (e: React.MouseEvent) => {
@@ -178,9 +230,30 @@ export const VideoCard: React.FC<VideoCardProps> = ({
         className="bg-card rounded-xl border border-border overflow-hidden hover:shadow-lg transition-all cursor-pointer hover:border-brand/50"
       >
         <div className="relative aspect-video bg-muted">
-          {thumbnailUrl && !imageError ? (
+          {/* {thumbnailUrl && !imageError ? (
             <img
               src={thumbnailUrl}
+              alt={title}
+              className="w-full h-full object-cover"
+              onError={() => setImageError(true)}
+              loading="lazy"
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-accent to-accent/50">
+              {imageError ? (
+                <ImageOff className="w-12 h-12 text-muted-foreground/30" />
+              ) : (
+                <PlayCircle className="w-12 h-12 text-brand/50" />
+              )}
+            </div>
+          )} */}
+          {isLoadingImage ? (
+            <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-accent to-accent/50">
+              <div className="w-8 h-8 border-2 border-brand/30 border-t-brand rounded-full animate-spin" />
+            </div>
+          ) : imageUrl && !imageError ? (
+            <img
+              src={imageUrl}
               alt={title}
               className="w-full h-full object-cover"
               onError={() => setImageError(true)}

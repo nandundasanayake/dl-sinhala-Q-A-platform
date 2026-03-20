@@ -138,7 +138,7 @@ export const useVideoStore = create<VideoStore>()(
           }
           
           const data = await response.json();
-          
+          console.log("video_data ", data);
           // Transform API response to match our Video interface
           const videos: Video[] = data.videos.map((v: any) => ({
             id: v.id,
@@ -146,7 +146,7 @@ export const useVideoStore = create<VideoStore>()(
             title: v.title,
             uploadedAt: new Date(v.uploaded_at),
             duration: v.duration || '0:00',
-            thumbnail: v.thumbnail_url,
+            thumbnail: v.video_id,
             status: 'ready',
             s3Url: v.video_url,
             transcriptUrl: v.transcript_url,
