@@ -25,6 +25,7 @@ export const VideoWatch: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isFetchingUrl, setIsFetchingUrl] = useState(false);
   const [seekToTime, setSeekToTime] = useState<number | null>(null);
+  const processedSeekRef = useRef<number | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const video = getVideoById(videoId || '');
 
@@ -38,7 +39,7 @@ export const VideoWatch: React.FC = () => {
 
       // If we already have a signed URL that starts with https, use it
       if (video.s3Url && video.s3Url.startsWith('https://')) {
-        console.log('Using existing signed URL');
+        console.log('Using existing signed URL', video);
         setIsLoading(false);
         return;
       }
@@ -46,27 +47,15 @@ export const VideoWatch: React.FC = () => {
       setIsFetchingUrl(true);
       try {
         console.log('Fetching signed URL for:', video.video_id);
-        const response = await fetch(
-          `${API_BASE_URL}/api/videos/${encodeURIComponent(video.video_id)}`,
-          {
-            headers: {
-              'ngrok-skip-browser-warning': 'true'
-          }});
         
-        if (response.ok) {
-          const data = await response.json();
-          console.log('Received signed URL');
+        
           
-          // Update the video in store with signed URL
-          updateVideo(video.id, { 
-            s3Url: data.url 
-          });
-          setVideoError(null);
-        } else {
-          const errorText = await response.text();
-          console.error('Failed to get signed URL:', errorText);
-          setVideoError('Failed to get video URL');
-        }
+        // Update the video in store with signed URL
+        updateVideo(video.id, { 
+          s3Url: video.s3Url 
+        });
+        setVideoError(null);
+       
       } catch (error) {
         console.error('Error fetching signed URL:', error);
         setVideoError('Failed to load video');
@@ -109,6 +98,20 @@ export const VideoWatch: React.FC = () => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory]);
 
+
+  useEffect(() => {
+    if (seekToTime !== null && processedSeekRef.current !== seekToTime) {
+      processedSeekRef.current = seekToTime;
+      // Reset seekToTime after a short delay to allow the video to seek
+      const timer = setTimeout(() => {
+        setSeekToTime(null);
+        processedSeekRef.current = null;
+      }, 100);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [seekToTime]);
+
   const handleSeek = (timeString: string) => {
     const [minutes, seconds] = timeString.split(':').map(Number);
     const totalSeconds = (minutes * 60) + seconds;
@@ -123,35 +126,72 @@ export const VideoWatch: React.FC = () => {
   };
 
   const renderMessageContent = (content: string) => {
-    const regex = /(⏱️\s*\[▶ Play Video \(\d{2}:\d{2}\s*-\s*\d{2}:\d{2}\)\])/g;
-    const parts = content.split(regex);
+    // Use a regex that captures both times as separate groups
+    const regex = /⏱️\s*\[▶ Play Video \((\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})\)\]/g;
+    const parts = [];
+    let lastIndex = 0;
+    let match;
+    
+    // Manual splitting to preserve matches with both times
+    while ((match = regex.exec(content)) !== null) {
+      // Add text before the match
+      if (match.index > lastIndex) {
+        parts.push(content.substring(lastIndex, match.index));
+      }
+      
+      // Add the match with captured times
+      parts.push({
+        type: 'timestamp',
+        fullMatch: match[0],
+        startTime: match[1],
+        endTime: match[2],
+        index: match.index
+      });
+      
+      lastIndex = match.index + match[0].length;
+    }
+    
+    // Add remaining text
+    if (lastIndex < content.length) {
+      parts.push(content.substring(lastIndex));
+    }
     
     return parts.map((part, index) => {
-      if (part && part.startsWith('⏱️')) {
-        const timeMatch = part.match(/(\d{2}:\d{2})/);
-        const startTime = timeMatch ? timeMatch[0] : "00:00";
+      // Handle timestamp parts
+      if (typeof part !== 'string' && part.type === 'timestamp') {
+        console.log("Found timestamp:", part.startTime, "-", part.endTime);
         
         return (
-          <button 
-            key={index}
-            onClick={() => handleSeek(startTime)}
-            className="inline-flex items-center gap-1.5 bg-accent text-brand px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-accent/80 transition-colors mt-2 border border-border shadow-sm"
-            title={`Click to play video from ${startTime}`}
-          >
-            <PlayCircle className="w-4 h-4" />
-            Play ({startTime})
-          </button>
+          <div key={index} className="flex flex-row gap-1 mt-2">
+            <button 
+              onClick={() => handleSeek(part.startTime)}
+              className="inline-flex items-center gap-1.5 bg-accent text-brand px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-accent/80 transition-colors border border-border shadow-sm"
+              title={`Click to play video from ${part.startTime}`}
+            >
+              <PlayCircle className="w-4 h-4" />
+              {part.startTime}
+            </button>
+            <button 
+              onClick={() => handleSeek(part.endTime)}
+              className="inline-flex items-center gap-1.5 bg-accent text-brand px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-accent/80 transition-colors border border-border shadow-sm"
+              title={`Click to play video from ${part.endTime}`}
+            >
+              <PlayCircle className="w-4 h-4" />
+              {part.endTime}
+            </button>
+          </div>
         );
       }
       
+      // Handle regular text
       return (
         <span key={index}>
-          {part?.split('\n').map((line, i) => (
+          {(typeof part === 'string' ? part : '').split('\n').map((line, i) => (
             <React.Fragment key={i}>
               <span dangerouslySetInnerHTML={{ 
                 __html: line.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') 
               }} />
-              {i !== part.split('\n').length - 1 && <br />}
+              {i !== (typeof part === 'string' ? part : '').split('\n').length - 1 && <br />}
             </React.Fragment>
           ))}
         </span>
@@ -187,6 +227,7 @@ export const VideoWatch: React.FC = () => {
       });
 
       const data = await response.json();
+      console.log('API response:', data);
 
       if (response.ok) {
         const assistantMessage: ChatMessage = { 
@@ -197,21 +238,53 @@ export const VideoWatch: React.FC = () => {
         setChatHistory(updatedHistory);
         localStorage.setItem(`chat_${videoId}`, JSON.stringify(updatedHistory));
       } else {
-        const errorMessage: ChatMessage = { 
+         // Handle different error types
+        let errorMessage = '';
+        
+        if (response.status === 429) {
+          // Rate limit error
+          errorMessage = getRateLimitMessage(data);
+        } else if (response.status === 503 || response.status === 504) {
+          errorMessage = 'Service temporarily unavailable. Please try again in a few moments.';
+        } else if (response.status === 500) {
+          errorMessage = 'Server error. Our team has been notified. Please try again later.';
+        } else {
+          errorMessage = `Error: ${data.detail || 'Something went wrong'}`;
+        }
+        
+        const errorMessageObj: ChatMessage = { 
           role: 'assistant', 
-          content: `❌ Error: ${data.detail}` 
+          content: errorMessage
         };
-        setChatHistory([...newHistory, errorMessage]);
+        setChatHistory([...newHistory, errorMessageObj]);
       }
     } catch (error) {
       const errorMessage: ChatMessage = { 
         role: 'assistant', 
-        content: `❌ Network Error: Could not connect.` 
+        content: `Network Error: Could not connect.` 
       };
       setChatHistory([...newHistory, errorMessage]);
     } finally {
       setIsTyping(false);
     }
+  };
+
+  const getRateLimitMessage = (data: any): string => {
+    let retryTime = '';
+    
+    // Try to extract retry time from error details
+    if (data.details && data.details[2] && data.details[2].retryDelay) {
+      const delaySeconds = data.details[2].retryDelay.replace('s', '');
+      retryTime = ` Please try again in ${Math.ceil(parseInt(delaySeconds))} seconds.`;
+    } else if (data.error?.details) {
+      const retryInfo = data.error.details.find((d: any) => d.retryDelay);
+      if (retryInfo) {
+        const delaySeconds = retryInfo.retryDelay.replace('s', '');
+        retryTime = ` Please try again in ${Math.ceil(parseInt(delaySeconds))} seconds.`;
+      }
+    }
+    
+    return `**Rate Limit Reached**\n\nThe AI assistant is currently busy. ${retryTime}\n\n*Free tier has a limit of 20 requests per day. Please wait a moment before sending more questions.*\n\n💡 **Tip**: You can still use the video player normally and review previous answers.`;
   };
 
   if (isLoading || isFetchingUrl) {
