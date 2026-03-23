@@ -167,23 +167,26 @@ export const VideoWatch: React.FC = () => {
         console.log("Found timestamp:", part.startTime, "-", part.endTime);
         
         return (
-          <div key={index} className="flex flex-row gap-1 mt-2">
-            <button 
-              onClick={() => handleSeek(part.startTime)}
-              className="inline-flex items-center gap-1.5 bg-accent text-brand px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-accent/80 transition-colors border border-border shadow-sm"
-              title={`Click to play video from ${part.startTime}`}
-            >
-              <PlayCircle className="w-4 h-4" />
-              {part.startTime}
-            </button>
-            <button 
-              onClick={() => handleSeek(part.endTime)}
-              className="inline-flex items-center gap-1.5 bg-accent text-brand px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-accent/80 transition-colors border border-border shadow-sm"
-              title={`Click to play video from ${part.endTime}`}
-            >
-              <PlayCircle className="w-4 h-4" />
-              {part.endTime}
-            </button>
+          <div key={index} className="flex flex-col content-between items-center gap-2 mb-3">
+            {/* Timestamp buttons - Top row */}
+            <div className="flex flex-row gap-1">
+              <button 
+                onClick={() => handleSeek(part.startTime)}
+                className="inline-flex items-center gap-1.5 bg-accent text-brand px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-accent/80 transition-colors border border-border shadow-sm"
+                title={`Click to play video from ${part.startTime}`}
+              >
+                <PlayCircle className="w-4 h-4" />
+                {part.startTime}
+              </button>
+              <button 
+                onClick={() => handleSeek(part.endTime)}
+                className="inline-flex items-center gap-1.5 bg-accent text-brand px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-accent/80 transition-colors border border-border shadow-sm"
+                title={`Click to play video from ${part.endTime}`}
+              >
+                <PlayCircle className="w-4 h-4" />
+                {part.endTime}
+              </button>
+            </div>
           </div>
         );
       }

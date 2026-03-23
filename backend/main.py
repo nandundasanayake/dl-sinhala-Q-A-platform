@@ -147,8 +147,10 @@ def generate_and_upload_thumbnail(video_path, video_id, time_offset=5):
         
         # Upload to S3
         s3_client.put_object(
-            Bucket=BUCKET_NAME, Key=thumbnail_s3_key,
-            Body=buffer.getvalue(), ContentType='image/jpeg'
+            Bucket=BUCKET_NAME, 
+            Key=thumbnail_s3_key,
+            Body=buffer.getvalue(), 
+            ContentType='image/jpeg'
         )
         return f"https://{BUCKET_NAME}.s3.{os.getenv('AWS_REGION')}.amazonaws.com/{thumbnail_s3_key}"
     except Exception as e:
@@ -168,8 +170,10 @@ def upload_text_to_s3(text_content, s3_file_key):
     """Uploads raw transcript strings to AWS S3."""
     try:
         s3_client.put_object(
-            Bucket=BUCKET_NAME, Key=s3_file_key,
-            Body=text_content.encode('utf-8'), ContentType='text/plain'
+            Bucket=BUCKET_NAME, 
+            Key=s3_file_key,
+            Body=text_content.encode('utf-8'), 
+            ContentType='text/plain'
         )
         return f"https://{BUCKET_NAME}.s3.{os.getenv('AWS_REGION')}.amazonaws.com/{s3_file_key}"
     except Exception as e:
@@ -333,10 +337,13 @@ def process_video_background(video_id: str, file_path: str):
                 vector = result.embeddings[0].values
                 if vector:
                     opensearch_client.index(index=INDEX_NAME, body={
-                        "video_id": video_id, "text_chunk": chunk,
+                        "video_id": video_id, 
+                        "text_chunk": chunk,
                         "timestamp": chunk[1:14] if chunk.startswith("[") else "00:00",
-                        "video_s3_url": video_s3_url, "transcript_s3_url": transcript_s3_url,
-                        "duration": formatted_duration, "embedding": vector
+                        "video_s3_url": video_s3_url, 
+                        "transcript_s3_url": transcript_s3_url,
+                        "duration": formatted_duration, 
+                        "embedding": vector
                     })
             except Exception as e:
                 # Skip failed text chunks silently to ensure the main process continues
@@ -559,10 +566,13 @@ async def list_videos():
                 title = display_name.replace(".mp4", "").replace(".mov", "").replace(".avi", "").replace("_", " ").title()
                 
                 videos.append({
-                    "id": video_filename, "video_id": video_filename,
+                    "id": video_filename, 
+                    "video_id": video_filename,
                     "title": title,
-                    "video_url": video_url, "transcript_url": transcript_url,
-                    "thumbnail_url": thumbnail_url, "duration": duration,
+                    "video_url": video_url, 
+                    "transcript_url": transcript_url,
+                    "thumbnail_url": thumbnail_url, 
+                    "duration": duration,
                     "uploaded_at": obj['LastModified'].isoformat(), "file_size": obj['Size']
                 })
         
