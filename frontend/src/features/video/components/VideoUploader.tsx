@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+
+import React, { useState, useEffect, useRef } from 'react';
 import { Upload, X, Loader2, CheckCircle, AlertCircle, PlayCircle, FileVideo } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -27,7 +28,11 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
   const [progress, setProgress] = useState(0);
   const [errorMessage, setErrorMessage] = useState('');
   const [isDragging, setIsDragging] = useState(false);
+  const [statusMessage, setStatusMessage] = useState('');
+  
   const { addVideo } = useVideoStore();
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const videoIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!isOpen) {
@@ -37,16 +42,106 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
         setUploadStatus('idle');
         setProgress(0);
         setErrorMessage('');
+        setStatusMessage('');
+        if (pollIntervalRef.current) {
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
+        }
+        videoIdRef.current = null;
       }, 200);
     }
   }, [isOpen]);
 
+  // Poll for status updates
+  useEffect(() => {
+    if (videoIdRef.current && (uploadStatus === 'uploading' || uploadStatus === 'processing')) {
+      pollIntervalRef.current = setInterval(async () => {
+        try {
+          const response = await fetch(`${API_BASE_URL}/api/upload-status/${videoIdRef.current}`);
+          if (response.ok) {
+            const statusData = await response.json();
+            
+            console.log('Status:', statusData);
+            
+            // Update progress and message
+            setProgress(statusData.progress || 0);
+            setStatusMessage(statusData.message);
+            
+            // Update UI based on status
+            if (statusData.status === 'uploading') {
+              setUploadStatus('uploading');
+            } else if (statusData.status === 'uploaded') {
+              setUploadStatus('processing');
+              setStatusMessage('Video uploaded, starting transcription...');
+            } else if (statusData.status === 'transcript_generated') {
+              setUploadStatus('processing');
+              setStatusMessage('Transcript generated, finalizing...');
+            } else if (statusData.status === 'completed') {
+              if (pollIntervalRef.current) {
+                clearInterval(pollIntervalRef.current);
+                pollIntervalRef.current = null;
+              }
+              setUploadStatus('success');
+              setProgress(100);
+              
+              // Add to store
+              addVideo({
+                id: videoIdRef.current!,
+                video_id: videoIdRef.current!,
+                originalVideoId: videoIdRef.current!,
+                title: title || file?.name || '',
+                fileName: file?.name || '',
+                uploadedAt: new Date(),
+                duration: statusData.data?.duration || '00:00',
+                thumbnail: statusData.data?.thumbnail_url,
+                status: 'ready',
+                s3Url: statusData.data?.video_s3_url,
+                transcriptUrl: statusData.data?.transcript_s3_url,
+              });
+              
+              setTimeout(() => {
+                onClose();
+                if (onUploadComplete) {
+                  onUploadComplete(videoIdRef.current!);
+                }
+              }, 1500);
+            } else if (statusData.status === 'error') {
+              if (pollIntervalRef.current) {
+                clearInterval(pollIntervalRef.current);
+                pollIntervalRef.current = null;
+              }
+              setUploadStatus('error');
+              setErrorMessage(statusData.message || 'Processing failed');
+            }
+          }
+        } catch (err) {
+          console.error('Polling error:', err);
+        }
+      }, 2000);
+      
+      return () => {
+        if (pollIntervalRef.current) {
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
+        }
+      };
+    }
+  }, [uploadStatus, title, file, addVideo, onClose, onUploadComplete]);
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selected = e.target.files?.[0];
     if (selected) {
-      setFile(selected);
+      const maxSize = 500 * 1024 * 1024;
+      if (selected.size > maxSize) {
+        setErrorMessage(`File too large. Maximum size is 500MB.`);
+        setUploadStatus('error');
+        return;
+      }
       
+      setFile(selected);
       setTitle(selected.name.replace(/\.[^/.]+$/, ''));
+      setErrorMessage('');
+      setUploadStatus('idle');
     }
   };
 
@@ -66,10 +161,19 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
     
     const droppedFile = e.dataTransfer.files[0];
     if (droppedFile && droppedFile.type.startsWith('video/')) {
+      const maxSize = 500 * 1024 * 1024;
+      if (droppedFile.size > maxSize) {
+        setErrorMessage(`File too large. Maximum size is 500MB.`);
+        setUploadStatus('error');
+        return;
+      }
+      
       setFile(droppedFile);
       if (!title) {
         setTitle(droppedFile.name.replace(/\.[^/.]+$/, ''));
       }
+      setErrorMessage('');
+      setUploadStatus('idle');
     }
   };
 
@@ -79,59 +183,31 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
     setUploadStatus('uploading');
     setProgress(0);
     setErrorMessage('');
+    setStatusMessage('Starting upload...');
 
     const formData = new FormData();
     formData.append('file', file);
 
     try {
-      const interval = setInterval(() => {
-        setProgress(prev => {
-          if (prev >= 90) {
-            clearInterval(interval);
-            return 90;
-          }
-          return prev + 10;
-        });
-      }, 500);
-
       const response = await fetch(`${API_BASE_URL}/api/upload-video`, {
         method: 'POST',
         body: formData,
       });
 
-      clearInterval(interval);
-      setProgress(100);
-      setUploadStatus('processing');
-
       const data = await response.json();
 
-      if (response.ok) {
-        setUploadStatus('success');
-
-        const uniqueId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-        
-        addVideo({
-          id: uniqueId,
-          video_id: data.video_id,
-          originalVideoId: data.video_id,
-          title: title || file.name,
-          fileName: file.name,
-          uploadedAt: new Date(),
-          duration: data.duration || '00:00',
-          thumbnail: data.thumbnail_url,
-          status: 'ready',
-          s3Url: data.video_s3_url,
-          transcriptUrl: data.transcript_s3_url,
-        });
-
-        setTimeout(() => {
-          onClose();
-          onUploadComplete?.(data.video_id);
-        }, 1500);
-      } else {
+      if (!response.ok) {
         setUploadStatus('error');
         setErrorMessage(data.detail || 'Upload failed');
+        return;
       }
+
+      // Store video ID for polling
+      videoIdRef.current = data.video_id;
+      setUploadStatus('processing');
+      setProgress(10);
+      setStatusMessage('Processing started...');
+      
     } catch (error) {
       setUploadStatus('error');
       setErrorMessage('Network error. Please check your connection.');
@@ -151,34 +227,34 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
       case 'uploading':
         return {
           icon: <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 animate-spin text-brand" />,
-          text: `Uploading... ${progress}%`,
+          text: 'Uploading video...',
+          subText: `${Math.round(progress)}% complete`,
           bgColor: 'bg-blue-50',
-          textColor: 'text-blue-700',
-          borderColor: 'border-blue-200'
+          textColor: 'text-blue-700'
         };
       case 'processing':
         return {
           icon: <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 animate-spin text-brand" />,
-          text: 'Generating transcript & embeddings...',
-          bgColor: 'bg-accent',
-          textColor: 'text-foreground',
-          borderColor: 'border-border'
+          text: statusMessage || 'Processing video...',
+          subText: `${Math.round(progress)}% complete`,
+          bgColor: 'bg-purple-50',
+          textColor: 'text-purple-700'
         };
       case 'success':
         return {
           icon: <CheckCircle className="w-4 h-4 sm:w-5 sm:h-5 text-green-500" />,
           text: 'Upload complete!',
+          subText: 'Your video is ready to use',
           bgColor: 'bg-green-50',
-          textColor: 'text-green-700',
-          borderColor: 'border-green-200'
+          textColor: 'text-green-700'
         };
       case 'error':
         return {
           icon: <AlertCircle className="w-4 h-4 sm:w-5 sm:h-5 text-red-500" />,
-          text: errorMessage,
+          text: 'Upload failed',
+          subText: errorMessage,
           bgColor: 'bg-red-50',
-          textColor: 'text-red-700',
-          borderColor: 'border-red-200'
+          textColor: 'text-red-700'
         };
       default:
         return null;
@@ -190,20 +266,15 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className={cn(
-        // Base styles
         "p-0 gap-0 overflow-hidden",
-        // Responsive width
         "w-[calc(100%-2rem)] max-w-[calc(100%-2rem)]",
         "sm:max-w-md sm:w-full",
         "md:max-w-lg",
-        // Height management
         "max-h-[90vh] sm:max-h-[85vh]",
-        "flex flex-col", // Use flex column for proper height distribution
-        // Center positioning
+        "flex flex-col",
         "fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2",
         "mx-0"
       )}>
-        {/* Header - Fixed at top */}
         <DialogHeader className="bg-sidebar p-4 sm:p-5 md:p-6 flex-shrink-0">
           <DialogTitle className="flex items-center gap-2 text-sidebar-foreground text-lg sm:text-xl">
             <div className="p-1.5 sm:p-2 bg-white/10 rounded-lg">
@@ -212,14 +283,12 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
             Upload New Video
           </DialogTitle>
           <DialogDescription className="text-sidebar-foreground/70 text-xs sm:text-sm mt-0.5 sm:mt-1">
-            Share your video and let AI create smart notes and transcripts 
+            Share your video and let AI create smart notes and transcripts
           </DialogDescription>
         </DialogHeader>
 
-        {/* Scrollable Content Area */}
         <div className="flex-1 overflow-y-auto bg-background p-4 sm:p-5 md:p-6">
           {!file ? (
-            // Upload Area
             <div
               onClick={() => document.getElementById('video-upload')?.click()}
               onDragOver={handleDragOver}
@@ -230,9 +299,7 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
                 "p-4 sm:p-6 md:p-8",
                 "text-center",
                 "min-h-[200px] sm:min-h-[250px] flex flex-col items-center justify-center",
-                isDragging 
-                  ? "border-brand bg-accent/50" 
-                  : "border-border hover:border-brand hover:bg-accent/20"
+                isDragging ? "border-brand bg-accent/50" : "border-border hover:border-brand hover:bg-accent/20"
               )}
             >
               <div className={cn(
@@ -247,24 +314,12 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
                   isDragging ? "text-white" : "text-brand"
                 )} />
               </div>
-              
               <p className="text-sm sm:text-base text-foreground font-medium mb-1">
                 {isDragging ? "Drop your video here" : "Click to select or drag and drop"}
               </p>
               <p className="text-xs sm:text-sm text-muted-foreground mb-2 sm:mb-3">
-                MP4, WebM, or MOV (max 500MB)
+                MP4, WebM, MOV, or AVI (max 500MB)
               </p>
-              
-              <div className="flex flex-wrap items-center justify-center gap-2 text-xs text-muted-foreground">
-                <span className="flex items-center gap-1 whitespace-nowrap">
-                  <FileVideo className="w-3 h-3" /> Any format
-                </span>
-                <span className="w-1 h-1 rounded-full bg-border hidden xs:inline-block" />
-                <span className="whitespace-nowrap">Up to 4K</span>
-                <span className="w-1 h-1 rounded-full bg-border hidden xs:inline-block" />
-                <span className="whitespace-nowrap">Drag & drop</span>
-              </div>
-              
               <input
                 id="video-upload"
                 type="file"
@@ -274,9 +329,7 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
               />
             </div>
           ) : (
-            // File Selected View
             <div className="space-y-4">
-              {/* Title Input */}
               <div className="space-y-1 sm:space-y-2">
                 <Label htmlFor="title" className="text-xs sm:text-sm font-medium text-foreground">
                   Video Title
@@ -291,7 +344,6 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
                 />
               </div>
 
-              {/* File Info Card - Improved for long filenames */}
               <div className={cn(
                 "rounded-lg p-3 sm:p-4 border",
                 "flex flex-col sm:flex-row items-start gap-3",
@@ -301,14 +353,11 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
                   <PlayCircle className="w-5 h-5 sm:w-6 sm:h-6 text-brand" />
                 </div>
                 
-                {/* Filename container with proper overflow handling */}
                 <div className="flex-1 min-w-0 w-full">
-                  {/* Filename with tooltip on hover */}
                   <div className="group relative">
                     <p className="text-sm font-medium text-foreground truncate" title={file.name}>
                       {truncateFileName(file.name, 25)}
                     </p>
-                    {/* Tooltip for full filename on hover (desktop only) */}
                     <div className="hidden sm:block absolute bottom-full left-0 mb-1 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50">
                       {file.name}
                     </div>
@@ -317,25 +366,32 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
                     {(file.size / (1024 * 1024)).toFixed(2)} MB
                   </p>
                   
-                  {/* Status Message */}
                   {statusDisplay && uploadStatus !== 'idle' && (
                     <div className={cn(
-                      "mt-2 p-2 rounded-md text-xs flex items-center gap-2",
+                      "mt-2 p-2 rounded-md text-xs",
                       statusDisplay.bgColor,
                       statusDisplay.textColor,
-                      statusDisplay.borderColor,
                       "border"
                     )}>
-                      <span className="flex-shrink-0">{statusDisplay.icon}</span>
-                      <span className="flex-1 break-words">{statusDisplay.text}</span>
+                      <div className="flex items-start gap-2">
+                        <span className="flex-shrink-0 mt-0.5">{statusDisplay.icon}</span>
+                        <div className="flex-1">
+                          <p className="font-medium">{statusDisplay.text}</p>
+                          {statusDisplay.subText && (
+                            <p className="text-xs opacity-75 mt-0.5">{statusDisplay.subText}</p>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
                 
-                {/* Remove button - Always visible */}
                 {uploadStatus === 'idle' && (
                   <button
-                    onClick={() => setFile(null)}
+                    onClick={() => {
+                      setFile(null);
+                      setErrorMessage('');
+                    }}
                     className="p-1.5 hover:bg-accent rounded-full transition-colors flex-shrink-0 self-end sm:self-start"
                     aria-label="Remove file"
                   >
@@ -344,26 +400,24 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
                 )}
               </div>
 
-              {/* Progress Bar */}
               {uploadStatus !== 'idle' && uploadStatus !== 'success' && (
-                <div className="space-y-1">
-                  <Progress 
-                    value={progress} 
-                    className={cn(
-                      "h-2",
-                      uploadStatus === 'error' ? 'bg-red-100' : 'bg-muted'
-                    )}
-                  />
-                  <p className="text-xs text-right text-muted-foreground">
-                    {progress}% complete
-                  </p>
+                <div className="space-y-2">
+                  <Progress value={progress} className="h-2 bg-muted" />
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-muted-foreground">
+                      {uploadStatus === 'uploading' && 'Uploading...'}
+                      {uploadStatus === 'processing' && 'Processing...'}
+                    </span>
+                    <span className="text-muted-foreground font-medium">
+                      {Math.round(progress)}% complete
+                    </span>
+                  </div>
                 </div>
               )}
             </div>
           )}
         </div>
 
-        {/* Footer - Fixed at bottom */}
         <div className="border-t border-border bg-card p-3 sm:p-4 flex-shrink-0">
           <div className="flex flex-col-reverse sm:flex-row justify-end gap-2 sm:gap-3">
             <Button
@@ -412,7 +466,6 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
           </div>
         </div>
 
-        {/* Success Overlay */}
         {uploadStatus === 'success' && (
           <div className="absolute inset-0 bg-background/90 backdrop-blur-sm flex items-center justify-center p-4 z-20">
             <div className="text-center w-full max-w-xs sm:max-w-sm">

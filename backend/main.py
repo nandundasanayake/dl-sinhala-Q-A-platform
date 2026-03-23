@@ -2,8 +2,9 @@ import os
 import io
 import time
 import shutil
+from typing import Dict
 import boto3
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles  # Add this
 from fastapi.responses import FileResponse    # Add this
@@ -37,15 +38,15 @@ async def add_ngrok_header(request, call_next):
 # Configure CORS to allow requests from the React frontend (Vite default port 5173)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "https://dl-sinhala-q-a-platform.vercel.app", "https://intimidatory-divergently-yen.ngrok-free.dev",],
+    allow_origins=["http://localhost:5173", "https://dl-sinhala-q-a-platform.vercel.app", "https://intimidatory-divergently-yen.ngrok-free.dev"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Mount static files directory to serve thumbnails
-os.makedirs("static/thumbnails", exist_ok=True)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# os.makedirs("static/thumbnails", exist_ok=True)
+# app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # --- External Services Configuration ---
 
@@ -118,74 +119,6 @@ def get_video_duration(file_path):
     except Exception as e:
         print(f"⚠️ Could not get video duration: {e}")
         return "0:00"
-
-# def generate_thumbnail(file_path, output_path, time_offset=5):
-#     """Generate thumbnail from video at specified time offset."""
-#     try:
-#         clip = VideoFileClip(file_path)
-        
-#         # If video is shorter than time_offset, use middle of video
-#         if clip.duration < time_offset:
-#             time_offset = clip.duration / 2
-        
-#         # Get frame at specified time
-#         frame = clip.get_frame(time_offset)
-#         clip.close()
-        
-#         # Convert to PIL Image and save
-#         img = Image.fromarray(np.uint8(frame))
-#         # Resize to thumbnail size (320x180)
-#         img = img.resize((320, 180), Image.Resampling.LANCZOS)
-#         img.save(output_path, 'JPEG', quality=85)
-        
-#         return True
-#     except Exception as e:
-#         print(f"⚠️ Could not generate thumbnail: {e}")
-#         return False
-
-# def generate_thumbnail(video_path, video_id, time_offset=5):
-#     """Generate thumbnail from video and save locally."""
-#     try:
-#         # Create thumbnails directory if it doesn't exist
-#         thumbnail_dir = "static/thumbnails"
-#         os.makedirs(thumbnail_dir, exist_ok=True)
-        
-#         # Generate thumbnail filename
-#         thumbnail_filename = video_id.replace('.mp4', '.jpg').replace('.mov', '.jpg').replace('.avi', '.jpg')
-
-#         thumbnail_path = os.path.join(thumbnail_dir, thumbnail_filename)
-        
-#         # If thumbnail already exists, return the URL
-#         if os.path.exists(thumbnail_path):
-#             print(f"🖼️ Thumbnail already exists: {thumbnail_path}")
-#             return f"/static/thumbnails/{thumbnail_filename}"
-        
-#         # Generate new thumbnail using MoviePy
-#         clip = VideoFileClip(video_path)
-        
-#         # If video is shorter than time_offset, use middle of video
-#         if clip.duration < time_offset:
-#             time_offset = clip.duration / 2
-        
-#         # Get frame at specified time
-#         frame = clip.get_frame(time_offset)
-#         clip.close()
-        
-#         # Convert to PIL Image and save
-#         img = Image.fromarray(np.uint8(frame))
-#         # Resize to thumbnail size (320x180)
-#         img = img.resize((320, 180), Image.Resampling.LANCZOS)
-#         img.save(thumbnail_path, 'JPEG', quality=85)
-        
-#         print(f"✅ Thumbnail generated: {thumbnail_path}")
-#         return f"/static/thumbnails/{thumbnail_filename}"
-        
-#     except Exception as e:
-#         print(f"⚠️ Could not generate thumbnail: {e}")
-#         return None
-
-
-
 
 def generate_and_upload_thumbnail(video_path, video_id, time_offset=5):
     """Generate thumbnail from video and upload to S3."""
@@ -283,6 +216,7 @@ def split_into_chunks(text, chunk_size=5, overlap=2):
 setup_opensearch_index()
 
 # Local directory for temporary file processing
+upload_statuses: Dict[str, Dict] = {}
 UPLOAD_DIR = "temp_uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -312,69 +246,85 @@ async def root():
         ]
     }
 
-@app.post("/api/upload-video")
-async def upload_and_process_video(file: UploadFile = File(...)):
-    """Handles the full ingestion pipeline: S3 Upload -> Transcription -> Chunking -> Vector Indexing."""
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
-    thumbnail_path = os.path.join(UPLOAD_DIR, f"thumb_{file.filename}.jpg")
+
+# Status endpoint
+@app.get("/api/upload-status/{video_id}")
+async def get_upload_status(video_id: str):
+    if video_id not in upload_statuses:
+        raise HTTPException(status_code=404, detail="Video not found")
+    return upload_statuses[video_id]
+
+# Background processing
+def process_video_background(video_id: str, file_path: str):
+    """Process video in background with 4 main status updates"""
+    
+    def update_status(status, message, progress):
+        upload_statuses[video_id] = {
+            "status": status,
+            "message": message,
+            "progress": progress,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        print(f"[{video_id}] {status}: {message} ({progress}%)")
     
     try:
-        # 1. Save locally for processing
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-
-         # Get video duration using MoviePy
+        # Status 1: UPLOADING (0-50%)
+        update_status("uploading", "Uploading video to cloud...", 25)
+        
+        # Get duration
         duration = get_video_duration(file_path)
-        print(f"📹 Video duration: {duration}")
-
-        # Generate thumbnail using MoviePy
-        # save locally
-        thumbnail_url = generate_and_upload_thumbnail(file_path, file.filename)
-        print(f"🖼️ Thumbnail available at: {thumbnail_url}")
-
-        # save to s3
-        # thumbnail_generated = generate_thumbnail(file_path, thumbnail_path)
-        # thumbnail_url = None
-
-        # if thumbnail_generated:
-        #     # Upload thumbnail to S3
-        #     thumbnail_s3_key = f"thumbnails/{file.filename}.jpg"
-        #     thumbnail_url = upload_file_to_s3(thumbnail_path, thumbnail_s3_key)
-        #     print(f"🖼️ Thumbnail uploaded: {thumbnail_url}")
-
-        # Step 1: Upload Video to AWS S3 'videos' folder
-        video_s3_key = f"videos/{file.filename}"
+        
+        # Generate thumbnail
+        thumbnail_url = generate_and_upload_thumbnail(file_path, video_id)
+        
+        # Upload to S3
+        video_s3_key = f"videos/{video_id}"
         video_s3_url = upload_file_to_s3(file_path, video_s3_key)
+        
         if not video_s3_url:
-            raise HTTPException(status_code=500, detail="Cloud storage upload failed.")
-
-        # 3. Transcribe using Gemini 2.5 Flash
+            update_status("error", "Upload failed", 0)
+            return
+        
+        # Status 2: VIDEO UPLOADED (50%)
+        update_status("uploaded", "Video uploaded, starting transcription...", 50)
+        
+        # Start transcription
         video_file = client.files.upload(file=file_path)
+        
+        # Wait for AI processing
         while video_file.state.name == "PROCESSING":
-            time.sleep(5)
+            time.sleep(2)
             video_file = client.files.get(name=video_file.name)
-
-        # Prompt for original language transcription with timestamps
-        prompt = "Provide a full transcript with timestamps in the ORIGINAL language spoken. Do not translate. Format: [MM:SS - MM:SS] Text."
+        
+        # Generate transcript
+        prompt = "Provide a full transcript with timestamps in the ORIGINAL language spoken. Format: [MM:SS - MM:SS] Text."
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=[video_file, prompt]
         )
         transcript_text = response.text
-
-        # 4. Upload Transcript to S3 for reference
-        transcript_s3_url = upload_text_to_s3(transcript_text, f"transcripts/{file.filename}.txt")
-
-        # 5. Advanced Chunking and Vectorization
-        chunks = split_into_chunks(transcript_text, chunk_size=5, overlap=2)
-        for chunk in chunks:
-            if not chunk.strip(): continue
+        
+        # Status 3: TRANSCRIPT GENERATED (75%)
+        update_status("transcript_generated", "Transcript generated, saving...", 75)
+        
+        # Upload transcript to S3
+        transcript_s3_url = upload_text_to_s3(transcript_text, f"transcripts/{video_id}.txt")
+        
+        if not transcript_s3_url:
+            update_status("error", "Transcript save failed", 0)
+            return
+        
+        # Chunk and index
+        chunks = split_into_chunks(transcript_text)
+        total_chunks = len(chunks)
+        
+        for idx, chunk in enumerate(chunks):
+            if not chunk.strip():
+                continue
             
-            # Enrich chunk with metadata to improve search relevance
-            enriched_content = f"Video Source: {file.filename}\nContent: {chunk}"
-
+            enriched_content = f"Video Source: {video_id}\nContent: {chunk}"
+            
             try:
-                # Use dimensionality=768 to match the OpenSearch index schema
                 result = client.models.embed_content(
                     model="gemini-embedding-001", 
                     contents=enriched_content,
@@ -383,41 +333,74 @@ async def upload_and_process_video(file: UploadFile = File(...)):
                         output_dimensionality=768
                     )
                 )
-
-                vector = result.embeddings[0].values
-                if not vector: continue
-
-                # Index document into OpenSearch
-                doc = {
-                    "video_id": file.filename,
-                    "text_chunk": chunk,
-                    "timestamp": chunk[1:14] if chunk.startswith("[") else "00:00",
-                    "video_s3_url": video_s3_url,
-                    "transcript_s3_url": transcript_s3_url,
-                    "duration": duration, 
-                    "embedding": vector
-                }
-                opensearch_client.index(index=INDEX_NAME, body=doc)
-                time.sleep(0.5)
-                print(f"✅ Indexed chunk from {file.filename}")
                 
+                vector = result.embeddings[0].values
+                if vector:
+                    doc = {
+                        "video_id": video_id,
+                        "text_chunk": chunk,
+                        "timestamp": chunk[1:14] if chunk.startswith("[") else "00:00",
+                        "video_s3_url": video_s3_url,
+                        "transcript_s3_url": transcript_s3_url,
+                        "duration": duration,
+                        "embedding": vector
+                    }
+                    opensearch_client.index(index=INDEX_NAME, body=doc)
             except Exception as e:
-                print(f"⚠️ Indexing error: {e}")
-                time.sleep(2)
-
-        os.remove(file_path)
-        return {
-            "status": "success", 
-            "video_id": file.filename, 
+                print(f"Indexing error: {e}")
+                continue
+        
+        # Status 4: COMPLETED (100%)
+        update_status("completed", "Processing complete! Video ready.", 100)
+        
+        # Save final data
+        upload_statuses[video_id]["data"] = {
             "video_s3_url": video_s3_url,
             "transcript_s3_url": transcript_s3_url,
             "thumbnail_url": thumbnail_url,
-            "duration": duration  # This will show on video cards
+            "duration": duration
         }
-
+        
+        # Cleanup
+        os.remove(file_path)
+        
     except Exception as e:
-        if os.path.exists(file_path): os.remove(file_path)
-        # if os.path.exists(thumbnail_path): os.remove(thumbnail_path)
+        print(f"Error: {e}")
+        update_status("error", str(e), 0)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+# Upload endpoint
+@app.post("/api/upload-video")
+async def upload_and_process_video(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
+    file_path = os.path.join(UPLOAD_DIR, file.filename)
+    video_id = file.filename
+    
+    try:
+        # Save file
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # Initialize status
+        upload_statuses[video_id] = {
+            "status": "starting",
+            "message": "Starting upload...",
+            "progress": 0,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        # Start background processing
+        background_tasks.add_task(process_video_background, video_id, file_path)
+        
+        return { 
+            "status": "processing",
+            "video_id": video_id,
+            "message": "Upload started"
+        }
+        
+    except Exception as e:
+        if os.path.exists(file_path):
+            os.remove(file_path)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/chat")
