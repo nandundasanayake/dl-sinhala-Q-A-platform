@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Bot, User, Send, PlayCircle, Loader2 } from 'lucide-react';
+import { ArrowLeft, Bot, User, Send, PlayCircle, Loader2, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { VideoPlayer } from '../components/VideoPlayer';
 import { useVideoStore } from '@/store/video.store';
@@ -108,6 +108,11 @@ export const VideoWatch: React.FC = () => {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory]);
+
+  const handleClearChat = () => {
+    setChatHistory([]);
+    localStorage.removeItem(`chat_${videoId}`);
+  };
 
   const handleSeek = (timeString: string) => {
     const [minutes, seconds] = timeString.split(':').map(Number);
@@ -287,9 +292,23 @@ export const VideoWatch: React.FC = () => {
         </div>
 
         <div className="bg-card rounded-2xl shadow-sm border border-border flex flex-col h-[600px]">
-          <div className="bg-sidebar p-4 rounded-t-2xl flex items-center gap-2">
-            <Bot className="w-5 h-5 text-brand" />
-            <h2 className="text-sidebar-foreground font-semibold">AI Teaching Assistant</h2>
+          <div className="bg-sidebar p-4 rounded-t-2xl flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Bot className="w-5 h-5 text-brand" />
+              <h2 className="text-sidebar-foreground font-semibold">AI Teaching Assistant</h2>
+            </div>
+            {chatHistory.length > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleClearChat}
+                className="text-sidebar-foreground/70 hover:text-destructive hover:bg-destructive/10 gap-1.5"
+                title="Clear chat history"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span className="text-xs">Clear</span>
+              </Button>
+            )}
           </div>
 
           <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-muted/30">

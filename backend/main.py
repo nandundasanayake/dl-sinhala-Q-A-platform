@@ -4,8 +4,9 @@ import time
 import shutil
 import subprocess
 import math
-import re  # Added for timestamp regex formatting
+import re
 from typing import Dict
+import hashlib
 import boto3
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -216,6 +217,9 @@ upload_statuses: Dict[str, Dict] = {}
 UPLOAD_DIR = "temp_uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+# Global Cache for Chat Answers
+chat_response_cache: Dict[str, str] = {}
+
 # --- Data Models ---
 class ChatMessage(BaseModel):
     role: str
@@ -395,9 +399,18 @@ async def upload_and_process_video(file: UploadFile = File(...), background_task
 
 @app.post("/api/chat")
 async def ask_question(request: ChatRequest):
-    """Retrieves relevant context via Vector Search and generates a tailored response using Gemini Flash Lite."""
+    """Retrieves relevant context via Vector Search and generates a tailored response using Gemini Flash Lite with conversational memory and Caching."""
     try:
-        # Step 1: Intelligent Contextual Query Rewriting
+        # 1. CHECK CACHE
+        history_str = "".join([m.content for m in request.chat_history[-2:]])
+        raw_key = f"{request.video_id}_{request.question}_{history_str}"
+        cache_key = hashlib.md5(raw_key.encode()).hexdigest()
+
+        if cache_key in chat_response_cache:
+            print(f"⚡ Returning from Cache! Saved API cost for: {request.question}")
+            return {"status": "success", "answer": chat_response_cache[cache_key], "cached": True}
+
+        # 2. NORMAL PROCESS & QUERY REWRITE
         history_text = "\n".join([f"{m.role}: {m.content}" for m in request.chat_history[-2:]])
         rewrite_prompt = f"""You are a Contextual Search Query Generator for a Sinhala video database.
         Read the chat history and the new question. 
@@ -412,14 +425,14 @@ async def ask_question(request: ChatRequest):
         )
         search_query_text = rewritten_q.text.strip()
 
-        # Step 2: Generate Question Embedding
+        # Generate Question Embedding
         result = client.models.embed_content(
             model="gemini-embedding-001", contents=search_query_text,
             config=types.EmbedContentConfig(task_type="RETRIEVAL_QUERY", output_dimensionality=768)
         )
         vector = result.embeddings[0].values
         
-        # Step 3: OpenSearch Vector Search (Filtered by current video)
+        # OpenSearch Vector Search
         search_query = {
             "size": 15, "query": {
                 "bool": {"filter": [{"term": {"video_id": request.video_id}}],
@@ -433,33 +446,65 @@ async def ask_question(request: ChatRequest):
         except:
             context = "Context unavailable."
 
-        # Step 4: Final Answer Generation using retrieved context
-        system_instr = """You are a friendly and intelligent AI teaching assistant for children.
+        # 3. FINAL ANSWER GENERATION WITH MEMORY
+        system_instr = """You are a friendly, kind, and intelligent AI teaching assistant for children.
+        
         CRITICAL RULES:
-        1. FACTUALITY: Answer based ONLY on the provided Context. Do not guess. If the answer is not in the context, say EXACTLY: "I cannot find this information in the video."
+        1. FACTUALITY: Answer based ONLY on the provided Context. Do not guess. If the answer is not in the context, say EXACTLY: "මට මේ වීඩියෝ එකෙන් ඒ ගැන හොයාගන්න බැරි වුණා දුවේ/පුතේ."
         
         2. STRICT LANGUAGE MATCHING: 
-           - Look at the language of the 'Question'.
-           - If the Question is in ENGLISH: You MUST reply entirely in ENGLISH.
-           - If the Question is in SINHALA or SINGLISH: You MUST reply entirely in natural SINHALA SCRIPT.
+           - If the Question is in ENGLISH: Reply entirely in ENGLISH. 
+           - If the Question is in SINHALA or SINGLISH: Reply entirely in natural SINHALA SCRIPT.
            
         3. SINHALA TONE & STYLE: 
-           - Strictly use friendly, everyday Spoken/Conversational Sinhala (කතා කරන භාෂාව) suitable for kids (e.g., "කියන්නේ", "කරනවා", "වෙනවා"). 
-           - DO NOT use formal written Sinhala.
+           - Strictly use friendly, warm, everyday Spoken/Conversational Sinhala suitable for kids (e.g., "ඔව්", "කියන්නේ", "කරනවා", "මෙහෙමයි වෙන්නේ"). 
+           - Sound like a very kind and encouraging teacher. Do NOT be robotic or blunt.
+           - DO NOT use formal written Sinhala (ග්‍රන්ථාරූඪ භාෂාව).
            
         4. RESPONSE LENGTH & STRICT LISTING (CRITICAL):
-           - For simple questions, give a VERY CONCISE, short answer (1 sentence).
-           - STRICT LISTING RULE: If the user asks ONLY for types, names, or examples (e.g., "වර්ග මොනවාද?"), output ONLY THE NAMES in bullet points (e.g., * බාඳුරා). DO NOT add any descriptions, features, or extra sentences next to the names.
+           - Answer fully using natural sentences. Do not just give one-word answers.
+           - If the user asks for examples or types, use bullet points, but ALWAYS start with a friendly introductory sentence
            - ONLY provide descriptions if the user explicitly asks to "describe" or "explain" (විස්තර කරන්න කියලා ඇහුවොත් පමණක්).
            
         5. TIMESTAMPS: Always include timestamps at the end of your points exactly like this: ⏱️ [▶ Play Video (MM:SS - MM:SS)]
         """
-        final_prompt = f"Context:\n{context}\n\nQuestion (Reply entirely in the language of this question): {request.question}"
+        
+        formatted_contents = []
+        for msg in request.chat_history:
+            role = "user" if msg.role == "user" else "model"
+            formatted_contents.append({"role": role, "parts": [{"text": msg.content}]})
+            
+        final_prompt = f"Video Context:\n{context}\n\nUser Question: {request.question}"
+        formatted_contents.append({"role": "user", "parts": [{"text": final_prompt}]})
+        
         answer = client.models.generate_content(
-            model="gemini-2.5-flash-lite", contents=final_prompt, 
+            model="gemini-2.5-flash-lite", 
+            contents=formatted_contents, 
             config=types.GenerateContentConfig(system_instruction=system_instr, temperature=0.2)
         )
-        return {"status": "success", "answer": answer.text}
+        
+        # 4. SAVE TO CACHE
+        chat_response_cache[cache_key] = answer.text
+        
+        return {"status": "success", "answer": answer.text, "cached": False}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/chat/clear/{video_id}")
+async def clear_chat_cache(video_id: str):
+    """Clears the chat response cache for a specific video."""
+    try:
+        global chat_response_cache
+        # Clear all cache entries (since we can't easily match hashed keys to video_id)
+        # In a production system, you'd want to store video_id alongside the cache entry
+        initial_count = len(chat_response_cache)
+        chat_response_cache = {}
+        
+        return {
+            "status": "success", 
+            "message": f"Chat cache cleared for video: {video_id}",
+            "cleared_entries": initial_count
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
