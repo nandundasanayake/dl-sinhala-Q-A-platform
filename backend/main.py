@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import math
 import re
+import uuid
 from typing import Dict
 import hashlib
 import boto3
@@ -378,8 +379,12 @@ async def get_upload_status(video_id: str):
 @app.post("/api/upload-video")
 async def upload_and_process_video(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
     """Accepts the video file, saves it locally, and triggers the background processing task."""
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
-    video_id = file.filename
+    # Sanitize filename and generate unique video_id
+    safe_filename = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', file.filename.replace(" ", "_"))
+    unique_id = str(uuid.uuid4())[:8]
+    video_id = f"{unique_id}---{safe_filename}"
+    
+    file_path = os.path.join(UPLOAD_DIR, video_id)
     try:
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
@@ -549,9 +554,13 @@ async def list_videos():
                         duration = res['hits']['hits'][0]['_source'].get('duration', '0:00')
                 except: pass
                 
+                # Extract display name by stripping UUID prefix
+                display_name = video_filename.split("---")[-1] if "---" in video_filename else video_filename
+                title = display_name.replace(".mp4", "").replace(".mov", "").replace(".avi", "").replace("_", " ").title()
+                
                 videos.append({
                     "id": video_filename, "video_id": video_filename,
-                    "title": video_filename.replace(".mp4", "").replace("_", " ").title(),
+                    "title": title,
                     "video_url": video_url, "transcript_url": transcript_url,
                     "thumbnail_url": thumbnail_url, "duration": duration,
                     "uploaded_at": obj['LastModified'].isoformat(), "file_size": obj['Size']
@@ -590,9 +599,13 @@ async def get_video(video_id: str):
         thumbnail_filename = f"{video_id.replace('.mp4', '')}.jpg"
         thumbnail_url = f"/static/thumbnails/{thumbnail_filename}"
         
+        # Extract display name by stripping UUID prefix
+        display_name = video_id.split("---")[-1] if "---" in video_id else video_id
+        title = display_name.replace(".mp4", "").replace(".mov", "").replace(".avi", "").replace("_", " ").title()
+        
         return {"status": "success", "video": {
             "id": video_id, "video_id": video_id,
-            "title": video_id.replace(".mp4", "").replace("_", " ").title(),
+            "title": title,
             "video_url": video_url, "transcript_url": transcript_url,
             "thumbnail_url": thumbnail_url, "uploaded_at": response['LastModified'].isoformat(),
             "file_size": response['ContentLength']
