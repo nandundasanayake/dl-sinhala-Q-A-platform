@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Upload, X, Loader2, CheckCircle, AlertCircle, PlayCircle } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { useVideoStore } from '@/store/video.store';
@@ -371,7 +373,7 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
                 {isDragging ? "Drop your video here" : "Click to select or drag and drop"}
               </p>
               <p className="text-xs sm:text-sm text-muted-foreground mb-2 sm:mb-3">
-                MP4, WebM, MOV, or AVI (max 500MB)
+                MP4, WebM, MOV, or AVI (max 5GB)
               </p>
               <input
                 id="video-upload"
@@ -383,6 +385,20 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
             </div>
           ) : (
             <div className="space-y-4">
+              <div className="space-y-1 sm:space-y-2">
+                <Label htmlFor="title" className="text-xs sm:text-sm font-medium text-foreground">
+                  Video Title
+                </Label>
+                <Input
+                  id="title"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="Enter a descriptive title"
+                  disabled
+                  className="h-9 sm:h-10 text-sm border-input focus:border-ring focus:ring-ring/20 w-full"
+                />
+              </div>
+
               <div className={cn(
                 "rounded-lg p-3 sm:p-4 border",
                 "flex flex-col sm:flex-row items-start gap-3",
