@@ -1,10 +1,7 @@
-
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, X, Loader2, CheckCircle, AlertCircle, PlayCircle, FileVideo } from 'lucide-react';
+import { Upload, X, Loader2, CheckCircle, AlertCircle, PlayCircle } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
 import { useVideoStore } from '@/store/video.store';
 import { cn } from '@/lib/utils';
@@ -131,9 +128,9 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selected = e.target.files?.[0];
     if (selected) {
-      const maxSize = 2000 * 1024 * 1024;
+      const maxSize = 5 * 1024 * 1024 * 1024; // 5GB
       if (selected.size > maxSize) {
-        setErrorMessage(`File too large. Maximum size is 2GB.`);
+        setErrorMessage(`File too large. Maximum size is 5GB.`);
         setUploadStatus('error');
         return;
       }
@@ -161,9 +158,9 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
     
     const droppedFile = e.dataTransfer.files[0];
     if (droppedFile && droppedFile.type.startsWith('video/')) {
-      const maxSize = 2000 * 1024 * 1024;
+      const maxSize = 5 * 1024 * 1024 * 1024; // 5GB
       if (droppedFile.size > maxSize) {
-        setErrorMessage(`File too large. Maximum size is 2GB.`);
+        setErrorMessage(`File too large. Maximum size is 5GB.`);
         setUploadStatus('error');
         return;
       }
@@ -183,34 +180,90 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
     setUploadStatus('uploading');
     setProgress(0);
     setErrorMessage('');
-    setStatusMessage('Starting upload...');
-
-    const formData = new FormData();
-    formData.append('file', file);
+    setStatusMessage('Getting upload URL...');
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/upload-video`, {
-        method: 'POST',
-        body: formData,
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
+      // Step 1: Get pre-signed URL from backend
+      const encodedFileName = encodeURIComponent(file.name);
+      const urlResponse = await fetch(`${API_BASE_URL}/api/generate-upload-url?filename=${encodedFileName}`);
+      
+      if (!urlResponse.ok) {
+        const errorData = await urlResponse.json();
         setUploadStatus('error');
-        setErrorMessage(data.detail || 'Upload failed');
+        setErrorMessage(errorData.detail || 'Failed to generate upload URL');
         return;
       }
 
-      // Store video ID for polling
-      videoIdRef.current = data.video_id;
+      const { upload_url, video_id } = await urlResponse.json();
+      videoIdRef.current = video_id;
+
+      // Step 2: Direct upload to S3 using PUT request
+      setStatusMessage('Uploading to cloud storage...');
+      
+      const xhr = new XMLHttpRequest();
+      
+      await new Promise<void>((resolve, reject) => {
+        xhr.upload.addEventListener('progress', (event) => {
+          if (event.lengthComputable) {
+            // S3 upload progress (0-100% of the upload phase)
+            const percentComplete = Math.round((event.loaded / event.total) * 100);
+            setProgress(percentComplete);
+            setStatusMessage(`Uploading to cloud... ${percentComplete}%`);
+          }
+        });
+
+        xhr.addEventListener('load', () => {
+          if (xhr.status === 200) {
+            resolve();
+          } else {
+            reject(new Error(`S3 upload failed with status ${xhr.status}`));
+          }
+        });
+
+        xhr.addEventListener('error', () => {
+          reject(new Error('Network error during S3 upload'));
+        });
+
+        xhr.addEventListener('abort', () => {
+          reject(new Error('Upload was aborted'));
+        });
+
+        xhr.open('PUT', upload_url);
+        xhr.setRequestHeader('Content-Type', file.type || 'video/mp4');
+        xhr.send(file);
+      });
+
+      // Step 3: Trigger backend processing
+      setStatusMessage('Starting video processing...');
+      setProgress(0); // Reset progress for processing phase
+      
+      const processResponse = await fetch(`${API_BASE_URL}/api/process-video`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ video_id }),
+      });
+
+      if (!processResponse.ok) {
+        const errorData = await processResponse.json();
+        setUploadStatus('error');
+        setErrorMessage(errorData.detail || 'Failed to start processing');
+        return;
+      }
+
+      // Step 4: Switch to processing status - polling will take over from here
       setUploadStatus('processing');
       setProgress(10);
       setStatusMessage('Processing started...');
       
     } catch (error) {
       setUploadStatus('error');
-      setErrorMessage('Network error. Please check your connection.');
+      if (error instanceof Error) {
+        setErrorMessage(error.message);
+      } else {
+        setErrorMessage('Network error. Please check your connection.');
+      }
     }
   };
 
@@ -318,7 +371,7 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
                 {isDragging ? "Drop your video here" : "Click to select or drag and drop"}
               </p>
               <p className="text-xs sm:text-sm text-muted-foreground mb-2 sm:mb-3">
-                MP4, WebM, MOV, or AVI (max 2GB)
+                MP4, WebM, MOV, or AVI (max 500MB)
               </p>
               <input
                 id="video-upload"
@@ -330,20 +383,6 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
             </div>
           ) : (
             <div className="space-y-4">
-              <div className="space-y-1 sm:space-y-2">
-                <Label htmlFor="title" className="text-xs sm:text-sm font-medium text-foreground">
-                  Video Title
-                </Label>
-                <Input
-                  id="title"
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  placeholder="Enter a descriptive title"
-                  disabled={uploadStatus !== 'idle'}
-                  className="h-9 sm:h-10 text-sm border-input focus:border-ring focus:ring-ring/20 w-full"
-                />
-              </div>
-
               <div className={cn(
                 "rounded-lg p-3 sm:p-4 border",
                 "flex flex-col sm:flex-row items-start gap-3",

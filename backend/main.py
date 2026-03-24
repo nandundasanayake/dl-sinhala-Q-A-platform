@@ -1,7 +1,5 @@
 import os
-import io
 import time
-import shutil
 import subprocess
 import math
 import re
@@ -9,7 +7,7 @@ import uuid
 from typing import Dict
 import hashlib
 import boto3
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -19,9 +17,6 @@ from dotenv import load_dotenv
 from opensearchpy import OpenSearch, RequestsHttpConnection
 from pydantic import BaseModel
 from typing import List
-from moviepy import VideoFileClip
-from PIL import Image
-import numpy as np
 from datetime import datetime
 import urllib.parse
 
@@ -105,19 +100,22 @@ def setup_opensearch_index():
     except Exception as e:
         print(f"⚠️ OpenSearch Connection Warning: {e}")
 
-def get_video_duration_seconds(file_path):
-    """Get raw video duration in seconds using MoviePy."""
+def get_video_duration_seconds(video_url):
+    """Get raw video duration in seconds using ffprobe with remote URL."""
     try:
-        clip = VideoFileClip(file_path)
-        duration = clip.duration
-        clip.close()
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", 
+             "-of", "default=noprint_wrappers=1:nokey=1", video_url],
+            capture_output=True, text=True, timeout=60
+        )
+        duration = float(result.stdout.strip())
         return duration
     except Exception as e:
         print(f"⚠️ Could not get video duration: {e}")
         return 0
 
-def generate_and_upload_thumbnail(video_path, video_id, time_offset=5):
-    """Generates a thumbnail from the video and uploads it directly to S3."""
+def generate_and_upload_thumbnail(video_url, video_id, time_offset=5):
+    """Generates a thumbnail from the video URL using FFmpeg and uploads it directly to S3."""
     try:
         thumbnail_filename = f"{video_id}.jpg"
         thumbnail_s3_key = f"thumbnails/{thumbnail_filename}"
@@ -129,32 +127,35 @@ def generate_and_upload_thumbnail(video_path, video_id, time_offset=5):
         except:
             pass
         
-        clip = VideoFileClip(video_path)
-        if clip.duration < time_offset:
-            time_offset = clip.duration / 2
-            
-        frame = clip.get_frame(time_offset)
-        clip.close()
+        # Create a temporary file for the thumbnail
+        temp_jpg = os.path.join(UPLOAD_DIR, f"{video_id}_thumb.jpg")
         
-        # Convert to PIL Image
-        img = Image.fromarray(np.uint8(frame))
-        img = img.resize((320, 180), Image.Resampling.LANCZOS)
-        
-        # Save to bytes buffer
-        buffer = io.BytesIO()
-        img.save(buffer, format='JPEG', quality=85)
-        buffer.seek(0)
+        # Use FFmpeg to extract a frame from the remote video URL
+        subprocess.run([
+            "ffmpeg", "-y", "-ss", str(time_offset), "-i", video_url,
+            "-vframes", "1", "-q:v", "2", "-vf", "scale=320:180", temp_jpg
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
         
         # Upload to S3
-        s3_client.put_object(
-            Bucket=BUCKET_NAME, 
-            Key=thumbnail_s3_key,
-            Body=buffer.getvalue(), 
-            ContentType='image/jpeg'
-        )
+        with open(temp_jpg, 'rb') as f:
+            s3_client.put_object(
+                Bucket=BUCKET_NAME, 
+                Key=thumbnail_s3_key,
+                Body=f.read(), 
+                ContentType='image/jpeg'
+            )
+        
+        # Clean up temp file
+        if os.path.exists(temp_jpg):
+            os.remove(temp_jpg)
+        
         return f"https://{BUCKET_NAME}.s3.{os.getenv('AWS_REGION')}.amazonaws.com/{thumbnail_s3_key}"
     except Exception as e:
         print(f"⚠️ Could not generate thumbnail: {e}")
+        # Clean up temp file on error
+        temp_jpg = os.path.join(UPLOAD_DIR, f"{video_id}_thumb.jpg")
+        if os.path.exists(temp_jpg):
+            os.remove(temp_jpg)
         return None
 
 def upload_file_to_s3(local_path, s3_file_key):
@@ -235,10 +236,13 @@ class ChatRequest(BaseModel):
     question: str
     chat_history: List[ChatMessage] = []
 
+class ProcessVideoRequest(BaseModel):
+    video_id: str
+
 # --- Background Processing Logic (Chunking Large Videos) ---
 
-def process_video_background(video_id: str, file_path: str):
-    """Processes large videos in the background by splitting them into chunks to avoid memory and API limits."""
+def process_video_background(video_id: str):
+    """Processes large videos in the background by streaming from S3 and splitting them into chunks to avoid memory and API limits."""
     
     def update_status(status, message, progress):
         """Helper function to update the global status dictionary for frontend polling."""
@@ -252,22 +256,27 @@ def process_video_background(video_id: str, file_path: str):
     
     try:
         # Status 1: UPLOADING
-        # Initial status indicating the video is being saved and metadata is being extracted
-        update_status("uploading", "Uploading video to cloud and saving metadata...", 10)
+        # Initial status indicating the video is being processed and metadata is being extracted
+        update_status("uploading", "Processing video from cloud storage...", 10)
         
-        # Extract metadata and generate thumbnail
-        duration_sec = get_video_duration_seconds(file_path)
+        # Generate a pre-signed GET URL for reading the video from S3 (valid for 12 hours)
+        video_url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': BUCKET_NAME, 'Key': f"videos/{video_id}"},
+            ExpiresIn=43200
+        )
+        
+        # Construct the public S3 URL for storing in the database
+        video_s3_url = f"https://{BUCKET_NAME}.s3.{os.getenv('AWS_REGION')}.amazonaws.com/videos/{video_id}"
+        
+        # Extract metadata using ffprobe with the presigned URL
+        duration_sec = get_video_duration_seconds(video_url)
         minutes = int(duration_sec // 60)
         seconds = int(duration_sec % 60)
         formatted_duration = f"{minutes}:{seconds:02d}"
         
-        thumbnail_url = generate_and_upload_thumbnail(file_path, video_id)
-        video_s3_key = f"videos/{video_id}"
-        video_s3_url = upload_file_to_s3(file_path, video_s3_key)
-        
-        if not video_s3_url:
-            update_status("error", "S3 Upload failed", 0)
-            return
+        # Generate thumbnail using FFmpeg with the presigned URL
+        thumbnail_url = generate_and_upload_thumbnail(video_url, video_id)
 
         # Status 2: UPLOADED 
         # The frontend UI expects "uploaded" to trigger the "Transcription Started" visual state
@@ -275,19 +284,19 @@ def process_video_background(video_id: str, file_path: str):
 
         # CHUNKING LOGIC: Split video into 30-min chunks (1800s)
         CHUNK_DURATION = 1800  # 30 minutes in seconds
-        total_parts = math.ceil(duration_sec / CHUNK_DURATION)
+        total_parts = math.ceil(duration_sec / CHUNK_DURATION) if duration_sec > 0 else 1
         full_transcript = ""
 
         for i in range(total_parts):
             start_time = i * CHUNK_DURATION
-            chunk_file = f"{file_path}_part{i}.mp4"
+            chunk_file = os.path.join(UPLOAD_DIR, f"{video_id}_part{i}.mp4")
             
             # Maintain the "uploaded" status for the frontend, but dynamically update the progress bar and message
             update_status("uploaded", f"Transcribing part {i+1} of {total_parts}...", 30 + int((i/total_parts)*40))
             
-            # Fast-copy split using FFmpeg (Requires almost 0 RAM and is extremely fast)
+            # Fast-copy split using FFmpeg streaming from the presigned S3 URL
             subprocess.run([
-                "/usr/bin/ffmpeg", "-y", "-i", file_path,
+                "ffmpeg", "-y", "-i", video_url,
                 "-ss", str(start_time), "-t", str(CHUNK_DURATION),
                 "-c", "copy", chunk_file
             ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -314,7 +323,8 @@ def process_video_background(video_id: str, file_path: str):
             
             # Delete the Gemini File & Local Chunk immediately to save cloud and server storage space
             client.files.delete(name=video_file_gemini.name)
-            os.remove(chunk_file)
+            if os.path.exists(chunk_file):
+                os.remove(chunk_file)
             print(f"✅ Part {i+1} transcribed and cleaned up.")
 
         # Status 3: TRANSCRIPT_GENERATED
@@ -356,18 +366,11 @@ def process_video_background(video_id: str, file_path: str):
             "video_s3_url": video_s3_url, "transcript_s3_url": transcript_s3_url,
             "thumbnail_url": thumbnail_url, "duration": formatted_duration
         }
-        
-        # Final cleanup: Delete the massive original video file from the server
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        # No local file cleanup needed - video was never stored locally
             
     except Exception as e:
         print(f"Error during processing: {e}")
         update_status("error", f"Processing failed: {str(e)}", 0)
-        
-        # Ensure the file is deleted even if an error occurs to prevent storage leaks
-        if os.path.exists(file_path):
-            os.remove(file_path)
 
 
 # --- API Endpoints ---
@@ -383,30 +386,41 @@ async def get_upload_status(video_id: str):
         raise HTTPException(status_code=404, detail="Status not found")
     return upload_statuses[video_id]
 
-@app.post("/api/upload-video")
-async def upload_and_process_video(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
-    """Accepts the video file, saves it locally, and triggers the background processing task."""
+@app.get("/api/generate-upload-url")
+async def generate_upload_url(filename: str):
+    """Generates a pre-signed URL for direct-to-S3 uploads."""
     # Sanitize filename and generate unique video_id
-    safe_filename = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', file.filename.replace(" ", "_"))
+    safe_filename = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', filename.replace(" ", "_"))
     unique_id = str(uuid.uuid4())[:8]
     video_id = f"{unique_id}---{safe_filename}"
     
-    file_path = os.path.join(UPLOAD_DIR, video_id)
     try:
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-            
-        upload_statuses[video_id] = {
-            "status": "starting", "message": "Starting upload...", "progress": 0,
+        # Generate pre-signed PUT URL for direct upload to S3 (6 hours for large files)
+        presigned_url = s3_client.generate_presigned_url(
+            'put_object',
+            Params={'Bucket': BUCKET_NAME, 'Key': f"videos/{video_id}"},
+            ExpiresIn=21600
+        )
+        
+        return {"upload_url": presigned_url, "video_id": video_id}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/process-video")
+async def process_video(request: ProcessVideoRequest, background_tasks: BackgroundTasks):
+    """Triggers the background processing task for a video already uploaded to S3."""
+    try:
+        upload_statuses[request.video_id] = {
+            "status": "starting", "message": "Starting processing...", "progress": 0,
             "timestamp": datetime.utcnow().isoformat()
         }
         
-        # Add the heavy processing task to the background queue
-        background_tasks.add_task(process_video_background, video_id, file_path)
-        return {"status": "processing", "video_id": video_id, "message": "Upload started"}
+        # Add the heavy processing task to the background queue (no file_path needed)
+        background_tasks.add_task(process_video_background, request.video_id)
+        return {"status": "processing", "video_id": request.video_id, "message": "Processing started"}
         
     except Exception as e:
-        if os.path.exists(file_path): os.remove(file_path)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/chat")
