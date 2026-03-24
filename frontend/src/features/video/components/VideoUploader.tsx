@@ -161,9 +161,9 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
     
     const droppedFile = e.dataTransfer.files[0];
     if (droppedFile && droppedFile.type.startsWith('video/')) {
-      const maxSize = 500 * 1024 * 1024;
+      const maxSize = 2000 * 1024 * 1024;
       if (droppedFile.size > maxSize) {
-        setErrorMessage(`File too large. Maximum size is 500MB.`);
+        setErrorMessage(`File too large. Maximum size is 2GB.`);
         setUploadStatus('error');
         return;
       }

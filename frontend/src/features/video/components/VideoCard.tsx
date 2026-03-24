@@ -140,6 +140,12 @@ export const VideoCard: React.FC<VideoCardProps> = ({
     }
   }, [showMenu]);
 
+
+  useEffect(() => {
+    console.log("title:", title);
+  }, []);
+
+
   if (isFirst) {
     return (
       <div

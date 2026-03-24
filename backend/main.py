@@ -119,7 +119,7 @@ def get_video_duration_seconds(file_path):
 def generate_and_upload_thumbnail(video_path, video_id, time_offset=5):
     """Generates a thumbnail from the video and uploads it directly to S3."""
     try:
-        thumbnail_filename = video_id.replace('.mp4', '.jpg').replace('.mov', '.jpg').replace('.avi', '.jpg')
+        thumbnail_filename = f"{video_id}.jpg"
         thumbnail_s3_key = f"thumbnails/{thumbnail_filename}"
         
         # Return existing URL if already in S3
@@ -459,17 +459,19 @@ async def ask_question(request: ChatRequest):
             context = "Context unavailable."
 
         # 3. FINAL ANSWER GENERATION WITH MEMORY
-        system_instr = """You are a friendly, kind, and intelligent AI teaching assistant for children.
+        system_instr = """You are a friendly, kind, and advanced intelligent AI teaching assistant for children.
         
         CRITICAL RULES:
         1. FACTUALITY: Answer based ONLY on the provided Context. Do not guess. If the answer is not in the context, say EXACTLY: "මට මේ වීඩියෝ එකෙන් ඒ ගැන හොයාගන්න බැරි වුණා දුවේ/පුතේ."
         
-        2. STRICT LANGUAGE MATCHING: 
-           - If the Question is in ENGLISH: Reply entirely in ENGLISH. 
-           - If the Question is in SINHALA or SINGLISH: Reply entirely in natural SINHALA SCRIPT.
+        2. STRICT LANGUAGE RULES (FOLLOW EXACTLY):
+            - If the user's CURRENT question is written in ENGLISH → You MUST respond in ENGLISH only.
+            - If the user's CURRENT question is written in SINHALA or SINGLISH → You MUST respond in SINHALA only.
+            - IGNORE the language of the video context. Only look at the user's question language.
+            - This is the MOST IMPORTANT rule. Check the question language FIRST before generating any response.
            
-        3. SINHALA TONE & STYLE: 
-           - Strictly use friendly, warm, everyday Spoken/Conversational Sinhala suitable for kids (e.g., "ඔව්", "කියන්නේ", "කරනවා", "මෙහෙමයි වෙන්නේ"). 
+        3. SINHALA TONE & STYLE(when responding in Sinhala): 
+           - Strictly use friendly, warm, everyday Spoken/Conversational Sinhala suitable for 16-21 aged (e.g., "ඔව්", "කියන්නේ", "කරනවා", "මෙහෙමයි වෙන්නේ"). 
            - Sound like a very kind and encouraging teacher. Do NOT be robotic or blunt.
            - DO NOT use formal written Sinhala (ග්‍රන්ථාරූඪ භාෂාව).
            
@@ -548,8 +550,7 @@ async def list_videos():
                     transcript_url = None
                 
                 # Retrieve thumbnail URL
-                thumbnail_filename = video_filename.replace('.mp4', '.jpg').replace('.mov', '.jpg').replace('.avi', '.jpg')
-                thumbnail_s3_key = f"thumbnails/{thumbnail_filename}"
+                thumbnail_s3_key = f"thumbnails/{video_filename}.jpg"
                 thumbnail_url = f"https://{BUCKET_NAME}.s3.{os.getenv('AWS_REGION')}.amazonaws.com/{thumbnail_s3_key}"
                 
                 # Fetch duration from OpenSearch metadata
@@ -564,7 +565,8 @@ async def list_videos():
                 # Extract display name by stripping UUID prefix
                 display_name = video_filename.split("---")[-1] if "---" in video_filename else video_filename
                 title = display_name.replace(".mp4", "").replace(".mov", "").replace(".avi", "").replace("_", " ").title()
-                
+                print(f"display name:{display_name}")
+                print(f"title:{title}")
                 videos.append({
                     "id": video_filename, 
                     "video_id": video_filename,
@@ -633,12 +635,9 @@ async def delete_video(video_id: str):
         
         # Delete from S3
         s3_client.delete_object(Bucket=BUCKET_NAME, Key=f"videos/{video_id}")
+        s3_client.delete_object(Bucket=BUCKET_NAME, Key=f"thumbnails/{video_id}.jpg")
         try: s3_client.delete_object(Bucket=BUCKET_NAME, Key=f"transcripts/{video_id}.txt")
         except: pass
-        
-        # Delete local thumbnail if it exists
-        thumbnail_path = os.path.join("static/thumbnails", f"{video_id}.jpg")
-        if os.path.exists(thumbnail_path): os.remove(thumbnail_path)
         
         # Delete index records from OpenSearch
         try:
