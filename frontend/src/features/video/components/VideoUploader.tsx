@@ -318,7 +318,7 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
                 {isDragging ? "Drop your video here" : "Click to select or drag and drop"}
               </p>
               <p className="text-xs sm:text-sm text-muted-foreground mb-2 sm:mb-3">
-                MP4, WebM, MOV, or AVI (max 500MB)
+                MP4, WebM, MOV, or AVI (max 2GB)
               </p>
               <input
                 id="video-upload"
