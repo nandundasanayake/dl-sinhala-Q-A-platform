@@ -104,7 +104,7 @@ def get_video_duration_seconds(video_url):
     """Get raw video duration in seconds using ffprobe with remote URL."""
     try:
         result = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration", 
+            ["/usr/bin/ffmpeg", "-v", "error", "-show_entries", "format=duration", 
              "-of", "default=noprint_wrappers=1:nokey=1", video_url],
             capture_output=True, text=True, timeout=60
         )
@@ -132,7 +132,7 @@ def generate_and_upload_thumbnail(video_url, video_id, time_offset=5):
         
         # Use FFmpeg to extract a frame from the remote video URL
         subprocess.run([
-            "ffmpeg", "-y", "-ss", str(time_offset), "-i", video_url,
+            "/usr/bin/ffmpeg", "-y", "-ss", str(time_offset), "-i", video_url,
             "-vframes", "1", "-q:v", "2", "-vf", "scale=320:180", temp_jpg
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
         
@@ -296,7 +296,7 @@ def process_video_background(video_id: str):
             
             # Fast-copy split using FFmpeg streaming from the presigned S3 URL
             subprocess.run([
-                "ffmpeg", "-y", "-i", video_url,
+                "/usr/bin/ffmpeg", "-y", "-i", video_url,
                 "-ss", str(start_time), "-t", str(CHUNK_DURATION),
                 "-c", "copy", chunk_file
             ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
