@@ -337,7 +337,8 @@ def process_video_background(video_id: str):
                 1. Format strictly as: [MM:SS - MM:SS] Text.
                 2. Do NOT leave spaces inside the brackets (e.g., use [01:15 - 02:30], NOT [ 01:15 - 02:30 ]).
                 3. Do NOT print the timestamp twice in a row. 
-                4. Do NOT summarize or skip any spoken sentences."""
+                4. Do NOT summarize or skip any spoken sentences.
+                5. PREVENT REPETITION LOOPS: If there is a long silence or background noise, DO NOT hallucinate or continuously repeat filler words like "හරි" (Hari) or "ඕකේ" (Okay). Just SKIP the silent segments completely."""
                 
                 # Retry mechanism (up to 3 times) to handle Gemini API transient errors
                 max_retries = 3
