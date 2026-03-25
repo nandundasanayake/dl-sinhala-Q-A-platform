@@ -265,7 +265,7 @@ export const VideoWatch: React.FC = () => {
           <div key={index} className="inline-flex flex-row gap-1 mr-1 mb-3 mt-1 mx-0">
             <button 
               onClick={() => handleSeek(part.startTime)}
-              className="inline-flex items-center gap-1 bg-accent text-brand px-2 py-1 rounded-md text-xs font-medium hover:bg-accent/80 transition-colors border border-border"
+              className="inline-flex items-center gap-1.2 bg-accent text-brand px-2 py-1 rounded-md text-xs font-medium hover:bg-accent/80 transition-colors border border-border"
               title={`Click to play video from ${part.startTime}`}
             >
               <PlayCircle className="w-3 h-3" />
