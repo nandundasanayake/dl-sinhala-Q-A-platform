@@ -200,24 +200,37 @@ def split_into_chunks(text, chunk_size=5, overlap=2):
     return chunks
 
 def adjust_timestamps(transcript: str, offset_seconds: int) -> str:
-    """Adjusts relative timestamps from Gemini by adding the base offset of the video chunk."""
-    # Matches the [MM:SS - MM:SS] pattern
-    pattern = r'\[(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\]'
+    """Adjusts relative timestamps from Gemini by adding the base offset, supporting both MM:SS and HH:MM:SS."""
+    # Matches time formats like [MM:SS - MM:SS] or [HH:MM:SS - HH:MM:SS]
+    pattern = r'\[(\d{1,2}:\d{2}(?::\d{2})?)\s*-\s*(\d{1,2}:\d{2}(?::\d{2})?)\]'
     
-    def replace_match(match):
-        # Calculate absolute start time
-        start_m, start_s = int(match.group(1)), int(match.group(2))
-        total_start_s = start_m * 60 + start_s + offset_seconds
-        new_start_m, new_start_s = total_start_s // 60, total_start_s % 60
-        
-        # Calculate absolute end time
-        end_m, end_s = int(match.group(3)), int(match.group(4))
-        total_end_s = end_m * 60 + end_s + offset_seconds
-        new_end_m, new_end_s = total_end_s // 60, total_end_s % 60
-        
-        return f"[{new_start_m:02d}:{new_start_s:02d} - {new_end_m:02d}:{new_end_s:02d}]"
+    def time_to_seconds(time_str):
+        parts = list(map(int, time_str.split(':')))
+        if len(parts) == 3: # HH:MM:SS
+            return parts[0] * 3600 + parts[1] * 60 + parts[2]
+        elif len(parts) == 2: # MM:SS
+            return parts[0] * 60 + parts[1]
+        return 0
 
-    # Replace all matches in the transcript using the calculated absolute times
+    def seconds_to_time(total_seconds):
+        h = total_seconds // 3600
+        m = (total_seconds % 3600) // 60
+        s = total_seconds % 60
+        if h > 0:
+            return f"[{h:02d}:{m:02d}:{s:02d}"
+        else:
+            return f"[{m:02d}:{s:02d}"
+
+    def replace_match(match):
+        total_start_s = time_to_seconds(match.group(1)) + offset_seconds
+        total_end_s = time_to_seconds(match.group(2)) + offset_seconds
+        
+        # Format the new string properly (removing the extra '[' added by seconds_to_time helper)
+        start_str = seconds_to_time(total_start_s).replace('[', '')
+        end_str = seconds_to_time(total_end_s).replace('[', '')
+        
+        return f"[{start_str} - {end_str}]"
+
     return re.sub(pattern, replace_match, transcript)
 
 # Initialize OpenSearch
@@ -276,9 +289,16 @@ def process_video_background(video_id: str):
         
         # Extract metadata using ffprobe with the presigned URL
         duration_sec = get_video_duration_seconds(video_url)
-        minutes = int(duration_sec // 60)
+        
+        # Calculate Hours, Minutes, and Seconds properly
+        hours = int(duration_sec // 3600)
+        minutes = int((duration_sec % 3600) // 60)
         seconds = int(duration_sec % 60)
-        formatted_duration = f"{minutes}:{seconds:02d}"
+        
+        if hours > 0:
+            formatted_duration = f"{hours}:{minutes:02d}:{seconds:02d}"
+        else:
+            formatted_duration = f"{minutes}:{seconds:02d}"
         
         # Generate thumbnail using FFmpeg with the presigned URL
         thumbnail_url = generate_and_upload_thumbnail(video_url, video_id)
@@ -287,50 +307,76 @@ def process_video_background(video_id: str):
         # The frontend UI expects "uploaded" to trigger the "Transcription Started" visual state
         update_status("uploaded", "Video uploaded, starting transcription...", 30)
 
-        # CHUNKING LOGIC: Split video into 30-min chunks (1800s)
-        CHUNK_DURATION = 1800  # 30 minutes in seconds
+        # CHUNKING LOGIC: Split video into 15-min chunks (900s)
+        CHUNK_DURATION = 900  # 15 minutes in seconds
         total_parts = math.ceil(duration_sec / CHUNK_DURATION) if duration_sec > 0 else 1
         full_transcript = ""
 
         for i in range(total_parts):
-            start_time = i * CHUNK_DURATION
-            chunk_file = os.path.join(UPLOAD_DIR, f"{video_id}_part{i}.mp4")
-            
-            # Maintain the "uploaded" status for the frontend, but dynamically update the progress bar and message
-            update_status("uploaded", f"Transcribing part {i+1} of {total_parts}...", 30 + int((i/total_parts)*40))
-            
-            # Fast-copy split using FFmpeg streaming from the presigned S3 URL
-            subprocess.run([
-                FFMPEG_CMD, "-y", "-i", video_url,
-                "-ss", str(start_time), "-t", str(CHUNK_DURATION),
-                "-c", "copy", chunk_file
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                start_time = i * CHUNK_DURATION
+                chunk_file = os.path.join(UPLOAD_DIR, f"{video_id}_part{i}.mp4")
+                
+                # Maintain the "uploaded" status for the frontend UI progress bar
+                update_status("uploaded", f"Transcribing part {i+1} of {total_parts}...", 30 + int((i/total_parts)*40))
+                
+                # Fast-copy split using FFmpeg streaming directly from S3
+                subprocess.run([
+                    FFMPEG_CMD, "-y", "-i", video_url,
+                    "-ss", str(start_time), "-t", str(CHUNK_DURATION),
+                    "-c", "copy", chunk_file
+                ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-            # Upload video chunk to Gemini File API
-            video_file_gemini = client.files.upload(file=chunk_file)
-            while video_file_gemini.state.name == "PROCESSING":
-                time.sleep(5)
-                video_file_gemini = client.files.get(name=video_file_gemini.name)
+                # Upload video chunk to Gemini File API
+                video_file_gemini = client.files.upload(file=chunk_file)
+                while video_file_gemini.state.name == "PROCESSING":
+                    time.sleep(5)
+                    video_file_gemini = client.files.get(name=video_file_gemini.name)
 
-            # Prompt Gemini to transcribe the current chunk
-            prompt = "Provide a full transcript with timestamps in the ORIGINAL language spoken. Format: [MM:SS - MM:SS] Text."
-            
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=[video_file_gemini, prompt]
-            )
-            
-            # Adjust the relative timestamps from Gemini to reflect the absolute time in the full video
-            raw_transcript = response.text
-            adjusted_transcript = adjust_timestamps(raw_transcript, int(start_time))
-            
-            full_transcript += adjusted_transcript + "\n\n"
-            
-            # Delete the Gemini File & Local Chunk immediately to save cloud and server storage space
-            client.files.delete(name=video_file_gemini.name)
-            if os.path.exists(chunk_file):
-                os.remove(chunk_file)
-            print(f"✅ Part {i+1} transcribed and cleaned up.")
+                prompt = """Provide a HIGHLY DETAILED, FULL word-by-word transcript with timestamps in the ORIGINAL language spoken. 
+                Do NOT summarize. Do NOT skip any spoken sentences. 
+                Format strictly as: [MM:SS - MM:SS] Text."""
+                
+                # Retry mechanism (up to 3 times) to handle Gemini API transient errors
+                max_retries = 3
+                adjusted_transcript = ""
+                for attempt in range(max_retries):
+                    try:
+                        response = client.models.generate_content(
+                            model="gemini-2.5-flash",
+                            contents=[video_file_gemini, prompt]
+                        )
+                        raw_transcript = response.text
+                        adjusted_transcript = adjust_timestamps(raw_transcript, int(start_time))
+                        break  # Break out of the retry loop if transcription is successful
+                    except Exception as api_e:
+                        print(f"⚠️ Gemini API attempt {attempt+1} failed for part {i+1}: {api_e}")
+                        time.sleep(15)  # Wait 15 seconds before the next API attempt
+
+                # Append the generated transcript for this chunk to the main transcript
+                if adjusted_transcript:
+                    full_transcript += adjusted_transcript + "\n\n"
+                else:
+                    full_transcript += f"\n\n[⚠️ Error: Could not transcribe this section ({start_time//60} mins to {(start_time+CHUNK_DURATION)//60} mins)]\n\n"
+                
+                # Cleanup: Delete the file from Gemini and local server to save space
+                try:
+                    client.files.delete(name=video_file_gemini.name)
+                except:
+                    pass
+                if os.path.exists(chunk_file):
+                    os.remove(chunk_file)
+                
+                print(f"✅ Part {i+1} transcribed and cleaned up.")
+                
+                # Add a 10-second delay between chunks to prevent Gemini API Rate Limits (429 Too Many Requests)
+                time.sleep(10)
+
+            except Exception as chunk_e:
+                print(f"❌ Critical error in part {i+1}: {chunk_e}")
+                full_transcript += f"\n\n[⚠️ Critical Error skipping section ({start_time//60} mins)]\n\n"
+                # Prevent the entire system from crashing; gracefully skip to the next video chunk
+                continue
 
         # Status 3: TRANSCRIPT_GENERATED
         # The frontend UI expects "transcript_generated" to trigger the "Embedding Started" visual state
