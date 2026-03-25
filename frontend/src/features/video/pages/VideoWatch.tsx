@@ -118,9 +118,29 @@ export const VideoWatch: React.FC = () => {
   }, [seekToTime]);
 
   const handleSeek = (timeString: string) => {
-    const [minutes, seconds] = timeString.split(':').map(Number);
-    const totalSeconds = (minutes * 60) + seconds;
-    console.log("Seeked: ", totalSeconds);
+    let totalSeconds = 0;
+    
+    // Check if the timestamp has hours (format: HH:MM:SS)
+    const parts = timeString.split(':');
+    
+    if (parts.length === 3) {
+      // Format: HH:MM:SS
+      const hours = parseInt(parts[0]);
+      const minutes = parseInt(parts[1]);
+      const seconds = parseInt(parts[2]);
+      totalSeconds = (hours * 3600) + (minutes * 60) + seconds;
+    } else if (parts.length === 2) {
+      // Format: MM:SS
+      const minutes = parseInt(parts[0]);
+      const seconds = parseInt(parts[1]);
+      totalSeconds = (minutes * 60) + seconds;
+    } else {
+      // Invalid format, try to parse as seconds
+      console.error('Invalid time format:', timeString);
+      return;
+    }
+    
+    console.log("Seeking to:", timeString, "->", totalSeconds, "seconds");
     setSeekToTime(totalSeconds);
     setCurrentVideoTime(totalSeconds);
   };
@@ -147,19 +167,39 @@ export const VideoWatch: React.FC = () => {
     // First, clean the content to remove extra blank lines
     let processedContent = cleanContent(content);
     
+    // Step 1: Convert the specific format "⏱️ [▶ Play Video (HH:MM:SS - HH:MM:SS)]" 
+    // to individual timestamp buttons (only showing start time)
+    
+    // Handle timestamps with hours (HH:MM:SS format)
+    const timestampWithHoursRegex = /⏱️\s*\[▶ Play Video\s*\((\d{2}:\d{2}:\d{2})\s*-\s*(\d{2}:\d{2}:\d{2})\)\]/g;
+    
+    // Handle timestamps without hours (MM:SS format)
+    const timestampWithoutHoursRegex = /⏱️\s*\[▶ Play Video\s*\((\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})\)\]/g;
+    
+    // Replace both formats with a placeholder marker that we'll parse later
+    // This ensures we don't lose any timestamps during other transformations
+    processedContent = processedContent.replace(timestampWithHoursRegex, (match, start, end) => {
+      return `⏱️_TIMESTAMP_${start}_${end}`;
+    });
+    
+    processedContent = processedContent.replace(timestampWithoutHoursRegex, (match, start, end) => {
+      return `⏱️_TIMESTAMP_${start}_${end}`;
+    });
+    
+    // Now handle the existing transformations for other timestamp formats
     // Convert standalone timestamps (like "07:50\n08:31") into proper format
     processedContent = processedContent.replace(
       /(\d{2}:\d{2})\s*\n\s*(\d{2}:\d{2})/g,
       (match, start, end) => {
-        return `⏱️ [▶ Play Video (${start} - ${end})]`;
+        return `⏱️_TIMESTAMP_${start}_${end}`;
       }
     );
     
     // Convert timestamps in format "07:50 - 08:31" that aren't already wrapped
     processedContent = processedContent.replace(
-      /(?<!⏱️\s*\[▶ Play Video \()(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})(?!\)\])/g,
+      /(?<!⏱️_TIMESTAMP_)(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})(?!_)/g,
       (match, start, end) => {
-        return `⏱️ [▶ Play Video (${start} - ${end})]`;
+        return `⏱️_TIMESTAMP_${start}_${end}`;
       }
     );
     
@@ -167,7 +207,7 @@ export const VideoWatch: React.FC = () => {
     const pattern1 = /⏱️\s*\[▶ Play Video\s*\(([^)]+)\)(?:,\s*\(([^)]+)\))*\]/g;
     
     processedContent = processedContent.replace(pattern1, (match: string) => {
-      const timestampRegex = /\((\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})\)/g;
+      const timestampRegex = /(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})/g;
       const timestamps: Array<{start: string; end: string}> = [];
       let timestampMatch;
       
@@ -179,7 +219,7 @@ export const VideoWatch: React.FC = () => {
       }
       
       const newBlocks = timestamps.map(ts => {
-        return `⏱️ [▶ Play Video (${ts.start} - ${ts.end})]`;
+        return `⏱️_TIMESTAMP_${ts.start}_${ts.end}`;
       });
       
       return '\n' + newBlocks.join('\n');
@@ -194,10 +234,10 @@ export const VideoWatch: React.FC = () => {
       
       const blocks = [];
       if (timeMatch1) {
-        blocks.push(`⏱️ [▶ Play Video (${timeMatch1[1]} - ${timeMatch1[2]})]`);
+        blocks.push(`⏱️_TIMESTAMP_${timeMatch1[1]}_${timeMatch1[2]}`);
       }
       if (timeMatch2) {
-        blocks.push(`⏱️ [▶ Play Video (${timeMatch2[1]} - ${timeMatch2[2]})]`);
+        blocks.push(`⏱️_TIMESTAMP_${timeMatch2[1]}_${timeMatch2[2]}`);
       }
       
       return '\n' + blocks.join('\n');
@@ -208,7 +248,7 @@ export const VideoWatch: React.FC = () => {
     
     processedContent = processedContent.replace(pattern3, (match: string) => {
       const allTimestamps = [];
-      const tsRegex = /\((\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})\)/g;
+      const tsRegex = /(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})/g;
       let tsMatch;
       
       while ((tsMatch = tsRegex.exec(match)) !== null) {
@@ -220,7 +260,7 @@ export const VideoWatch: React.FC = () => {
       
       if (allTimestamps.length > 0) {
         const blocks = allTimestamps.map(ts => 
-          `⏱️ [▶ Play Video (${ts.start} - ${ts.end})]`
+          `⏱️_TIMESTAMP_${ts.start}_${ts.end}`
         );
         return '\n' + blocks.join('\n');
       }
@@ -228,13 +268,13 @@ export const VideoWatch: React.FC = () => {
       return match;
     });
     
-    // Now parse each individual timestamp
-    const regex = /⏱️\s*\[▶ Play Video \((\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})\)\]/g;
+    // Now parse all the timestamp markers we've created
+    const timestampMarkerRegex = /⏱️_TIMESTAMP_(\d{2}:\d{2}(?::\d{2})?)_(\d{2}:\d{2}(?::\d{2})?)/g;
     const parts: (string | { type: 'timestamp'; startTime: string; endTime: string })[] = [];
     let lastIndex = 0;
     let match: RegExpExecArray | null;
     
-    while ((match = regex.exec(processedContent)) !== null) {
+    while ((match = timestampMarkerRegex.exec(processedContent)) !== null) {
       if (match.index > lastIndex) {
         const textBefore = processedContent.substring(lastIndex, match.index);
         // Only add if it's not just whitespace
@@ -271,14 +311,6 @@ export const VideoWatch: React.FC = () => {
               <PlayCircle className="w-3 h-3" />
               {part.startTime}
             </button>
-            {/* <button 
-              onClick={() => handleSeek(part.endTime)}
-              className="inline-flex items-center gap-1 bg-accent text-brand px-2 py-0.5 rounded-md text-xs font-medium hover:bg-accent/80 transition-colors border border-border"
-              title={`Click to play video from ${part.endTime}`}
-            >
-              <PlayCircle className="w-3 h-3" />
-              {part.endTime}
-            </button> */}
           </div>
         );
       }
@@ -360,13 +392,16 @@ export const VideoWatch: React.FC = () => {
           content: errorMessage
         };
         setChatHistory([...newHistory, errorMessageObj]);
+       
       }
+      console.log('Updated chat history:', [...newHistory, { role: 'assistant', content: data.answer }]);
     } catch (error) {
       const errorMessage: ChatMessage = { 
         role: 'assistant', 
         content: `Network Error: Could not connect.` 
       };
       setChatHistory([...newHistory, errorMessage]);
+
     } finally {
       setIsTyping(false);
     }
