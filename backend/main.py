@@ -200,15 +200,19 @@ def split_into_chunks(text, chunk_size=5, overlap=2):
     return chunks
 
 def adjust_timestamps(transcript: str, offset_seconds: int) -> str:
-    """Adjusts relative timestamps from Gemini by adding the base offset, supporting both MM:SS and HH:MM:SS."""
-    # Matches time formats like [MM:SS - MM:SS] or [HH:MM:SS - HH:MM:SS]
-    pattern = r'\[(\d{1,2}:\d{2}(?::\d{2})?)\s*-\s*(\d{1,2}:\d{2}(?::\d{2})?)\]'
+    """Adjusts relative timestamps from Gemini, handling spaces and preventing double formatting."""
+    
+    # Clean up any weird double timestamps Gemini might have hallucinated 
+    cleaned_transcript = re.sub(r'\]\s*\d{1,2}:\d{2}(?::\d{2})?\s*-\s*\d{1,2}:\d{2}(?::\d{2})?\s*', '] ', transcript)
+
+    # Updated Regex to handle spaces inside brackets like [ 00:15 - 01:20 ]
+    pattern = r'\[\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*-\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*\]'
     
     def time_to_seconds(time_str):
         parts = list(map(int, time_str.split(':')))
-        if len(parts) == 3: # HH:MM:SS
+        if len(parts) == 3:
             return parts[0] * 3600 + parts[1] * 60 + parts[2]
-        elif len(parts) == 2: # MM:SS
+        elif len(parts) == 2:
             return parts[0] * 60 + parts[1]
         return 0
 
@@ -217,21 +221,16 @@ def adjust_timestamps(transcript: str, offset_seconds: int) -> str:
         m = (total_seconds % 3600) // 60
         s = total_seconds % 60
         if h > 0:
-            return f"[{h:02d}:{m:02d}:{s:02d}"
+            return f"{h:02d}:{m:02d}:{s:02d}"
         else:
-            return f"[{m:02d}:{s:02d}"
+            return f"{m:02d}:{s:02d}"
 
     def replace_match(match):
         total_start_s = time_to_seconds(match.group(1)) + offset_seconds
         total_end_s = time_to_seconds(match.group(2)) + offset_seconds
-        
-        # Format the new string properly (removing the extra '[' added by seconds_to_time helper)
-        start_str = seconds_to_time(total_start_s).replace('[', '')
-        end_str = seconds_to_time(total_end_s).replace('[', '')
-        
-        return f"[{start_str} - {end_str}]"
+        return f"[{seconds_to_time(total_start_s)} - {seconds_to_time(total_end_s)}]"
 
-    return re.sub(pattern, replace_match, transcript)
+    return re.sub(pattern, replace_match, cleaned_transcript)
 
 # Initialize OpenSearch
 setup_opensearch_index()
@@ -333,9 +332,12 @@ def process_video_background(video_id: str):
                     time.sleep(5)
                     video_file_gemini = client.files.get(name=video_file_gemini.name)
 
-                prompt = """Provide a HIGHLY DETAILED, FULL word-by-word transcript with timestamps in the ORIGINAL language spoken. 
-                Do NOT summarize. Do NOT skip any spoken sentences. 
-                Format strictly as: [MM:SS - MM:SS] Text."""
+                prompt = """Provide a HIGHLY DETAILED, FULL transcript with timestamps in the ORIGINAL language spoken. 
+                CRITICAL RULES:
+                1. Format strictly as: [MM:SS - MM:SS] Text.
+                2. Do NOT leave spaces inside the brackets (e.g., use [01:15 - 02:30], NOT [ 01:15 - 02:30 ]).
+                3. Do NOT print the timestamp twice in a row. 
+                4. Do NOT summarize or skip any spoken sentences."""
                 
                 # Retry mechanism (up to 3 times) to handle Gemini API transient errors
                 max_retries = 3
