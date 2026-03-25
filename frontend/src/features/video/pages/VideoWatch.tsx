@@ -130,76 +130,171 @@ export const VideoWatch: React.FC = () => {
     setCurrentVideoTime(time);
   };
 
-  const renderMessageContent = (content: string) => {
-    // Use a regex that captures both times as separate groups
-    const regex = /⏱️\s*\[▶ Play Video \((\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})\)\]/g;
-    const parts = [];
-    let lastIndex = 0;
-    let match;
+  const cleanContent = (content: string): string => {
+    // Remove multiple consecutive newlines (3 or more) and replace with single newline
+    let cleaned = content.replace(/\n{3,}/g, '\n\n');
     
-    // Manual splitting to preserve matches with both times
-    while ((match = regex.exec(content)) !== null) {
-      // Add text before the match
-      if (match.index > lastIndex) {
-        parts.push(content.substring(lastIndex, match.index));
+    // Remove empty lines that contain only whitespace
+    cleaned = cleaned.replace(/^\s*$\n/gm, '');
+    
+    // Remove spaces before timestamps
+    cleaned = cleaned.replace(/\s*\n\s*(\d{2}:\d{2})/g, '\n$1');
+    
+    return cleaned;
+  };
+
+  const renderMessageContent = (content: string) => {
+    // First, clean the content to remove extra blank lines
+    let processedContent = cleanContent(content);
+    
+    // Convert standalone timestamps (like "07:50\n08:31") into proper format
+    processedContent = processedContent.replace(
+      /(\d{2}:\d{2})\s*\n\s*(\d{2}:\d{2})/g,
+      (match, start, end) => {
+        return `⏱️ [▶ Play Video (${start} - ${end})]`;
+      }
+    );
+    
+    // Convert timestamps in format "07:50 - 08:31" that aren't already wrapped
+    processedContent = processedContent.replace(
+      /(?<!⏱️\s*\[▶ Play Video \()(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})(?!\)\])/g,
+      (match, start, end) => {
+        return `⏱️ [▶ Play Video (${start} - ${end})]`;
+      }
+    );
+    
+    // Pattern 1: Handle combined timestamps with one "▶ Play Video" and multiple timestamps
+    const pattern1 = /⏱️\s*\[▶ Play Video\s*\(([^)]+)\)(?:,\s*\(([^)]+)\))*\]/g;
+    
+    processedContent = processedContent.replace(pattern1, (match: string) => {
+      const timestampRegex = /\((\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})\)/g;
+      const timestamps: Array<{start: string; end: string}> = [];
+      let timestampMatch;
+      
+      while ((timestampMatch = timestampRegex.exec(match)) !== null) {
+        timestamps.push({
+          start: timestampMatch[1],
+          end: timestampMatch[2]
+        });
       }
       
-      // Add the match with captured times
+      const newBlocks = timestamps.map(ts => {
+        return `⏱️ [▶ Play Video (${ts.start} - ${ts.end})]`;
+      });
+      
+      return '\n' + newBlocks.join('\n');
+    });
+    
+    // Pattern 2: Handle combined timestamps with multiple "▶ Play Video" in one line
+    const pattern2 = /⏱️\s*\[▶ Play Video\s*\(([^)]+)\)\],?\s*⏱️\s*\[▶ Play Video\s*\(([^)]+)\)\]/g;
+    
+    processedContent = processedContent.replace(pattern2, (match: string, ts1: string, ts2: string) => {
+      const timeMatch1 = ts1.match(/(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})/);
+      const timeMatch2 = ts2.match(/(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})/);
+      
+      const blocks = [];
+      if (timeMatch1) {
+        blocks.push(`⏱️ [▶ Play Video (${timeMatch1[1]} - ${timeMatch1[2]})]`);
+      }
+      if (timeMatch2) {
+        blocks.push(`⏱️ [▶ Play Video (${timeMatch2[1]} - ${timeMatch2[2]})]`);
+      }
+      
+      return '\n' + blocks.join('\n');
+    });
+    
+    // Pattern 3: Handle format where timestamps are in parentheses without the emoji repeated
+    const pattern3 = /⏱️\s*\[▶ Play Video\s*\(([^)]+)\)(?:,\s*\(([^)]+)\))*\]/g;
+    
+    processedContent = processedContent.replace(pattern3, (match: string) => {
+      const allTimestamps = [];
+      const tsRegex = /\((\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})\)/g;
+      let tsMatch;
+      
+      while ((tsMatch = tsRegex.exec(match)) !== null) {
+        allTimestamps.push({
+          start: tsMatch[1],
+          end: tsMatch[2]
+        });
+      }
+      
+      if (allTimestamps.length > 0) {
+        const blocks = allTimestamps.map(ts => 
+          `⏱️ [▶ Play Video (${ts.start} - ${ts.end})]`
+        );
+        return '\n' + blocks.join('\n');
+      }
+      
+      return match;
+    });
+    
+    // Now parse each individual timestamp
+    const regex = /⏱️\s*\[▶ Play Video \((\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})\)\]/g;
+    const parts: (string | { type: 'timestamp'; startTime: string; endTime: string })[] = [];
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+    
+    while ((match = regex.exec(processedContent)) !== null) {
+      if (match.index > lastIndex) {
+        const textBefore = processedContent.substring(lastIndex, match.index);
+        // Only add if it's not just whitespace
+        if (textBefore.trim()) {
+          parts.push(textBefore);
+        }
+      }
+      
       parts.push({
         type: 'timestamp',
-        fullMatch: match[0],
         startTime: match[1],
-        endTime: match[2],
-        index: match.index
+        endTime: match[2]
       });
       
       lastIndex = match.index + match[0].length;
     }
     
-    // Add remaining text
-    if (lastIndex < content.length) {
-      parts.push(content.substring(lastIndex));
+    if (lastIndex < processedContent.length) {
+      const remainingText = processedContent.substring(lastIndex);
+      if (remainingText.trim()) {
+        parts.push(remainingText);
+      }
     }
     
     return parts.map((part, index) => {
-      // Handle timestamp parts
       if (typeof part !== 'string' && part.type === 'timestamp') {
-        console.log("Found timestamp:", part.startTime, "-", part.endTime);
-        
         return (
-          <div key={index} className="flex flex-col content-between items-center gap-2 mb-3">
-            {/* Timestamp buttons - Top row */}
-            <div className="flex flex-row gap-1">
-              <button 
-                onClick={() => handleSeek(part.startTime)}
-                className="inline-flex items-center gap-1.5 bg-accent text-brand px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-accent/80 transition-colors border border-border shadow-sm"
-                title={`Click to play video from ${part.startTime}`}
-              >
-                <PlayCircle className="w-4 h-4" />
-                {part.startTime}
-              </button>
-              <button 
-                onClick={() => handleSeek(part.endTime)}
-                className="inline-flex items-center gap-1.5 bg-accent text-brand px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-accent/80 transition-colors border border-border shadow-sm"
-                title={`Click to play video from ${part.endTime}`}
-              >
-                <PlayCircle className="w-4 h-4" />
-                {part.endTime}
-              </button>
-            </div>
+          <div key={index} className="inline-flex flex-row gap-1 mr-1 mb-3 mt-1 mx-0">
+            <button 
+              onClick={() => handleSeek(part.startTime)}
+              className="inline-flex items-center gap-1 bg-accent text-brand px-2 py-1 rounded-md text-xs font-medium hover:bg-accent/80 transition-colors border border-border"
+              title={`Click to play video from ${part.startTime}`}
+            >
+              <PlayCircle className="w-3 h-3" />
+              {part.startTime}
+            </button>
+            {/* <button 
+              onClick={() => handleSeek(part.endTime)}
+              className="inline-flex items-center gap-1 bg-accent text-brand px-2 py-0.5 rounded-md text-xs font-medium hover:bg-accent/80 transition-colors border border-border"
+              title={`Click to play video from ${part.endTime}`}
+            >
+              <PlayCircle className="w-3 h-3" />
+              {part.endTime}
+            </button> */}
           </div>
         );
       }
       
-      // Handle regular text
+      const textContent = typeof part === 'string' ? part : '';
+      // Remove any remaining multiple newlines
+      const cleanedText = textContent.replace(/\n{2,}/g, '\n');
+      
       return (
-        <span key={index}>
-          {(typeof part === 'string' ? part : '').split('\n').map((line, i) => (
+        <span key={index} className="leading-none">
+          {cleanedText.split('\n').map((line: string, i: number) => (
             <React.Fragment key={i}>
               <span dangerouslySetInnerHTML={{ 
                 __html: line.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') 
               }} />
-              {i !== (typeof part === 'string' ? part : '').split('\n').length - 1 && <br />}
+              {i !== cleanedText.split('\n').length - 1 && <br />}
             </React.Fragment>
           ))}
         </span>
@@ -404,7 +499,7 @@ export const VideoWatch: React.FC = () => {
                     </div>
                   )}
                   
-                  <div className={`max-w-[85%] rounded-2xl p-3.5 text-sm shadow-sm ${
+                  <div className={`max-w-[85%] mx-1 mb-5 rounded-2xl p-3.5 text-sm shadow-sm ${
                     msg.role === 'user' 
                       ? 'bg-brand text-brand-foreground rounded-tr-none' 
                       : 'bg-card border border-border text-foreground rounded-tl-none'
