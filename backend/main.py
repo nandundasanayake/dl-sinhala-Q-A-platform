@@ -307,8 +307,8 @@ def process_video_background(video_id: str):
         # The frontend UI expects "uploaded" to trigger the "Transcription Started" visual state
         update_status("uploaded", "Video uploaded, starting transcription...", 30)
 
-        # CHUNKING LOGIC: Split video into 30-min chunks (1800s)
-        CHUNK_DURATION = 1800  # 30 minutes in seconds
+        # CHUNKING LOGIC: Split video into 15-min chunks (900s)
+        CHUNK_DURATION = 900  # 15 minutes in seconds
         total_parts = math.ceil(duration_sec / CHUNK_DURATION) if duration_sec > 0 else 1
         full_transcript = ""
 
@@ -333,7 +333,9 @@ def process_video_background(video_id: str):
                     time.sleep(5)
                     video_file_gemini = client.files.get(name=video_file_gemini.name)
 
-                prompt = "Provide a full transcript with timestamps in the ORIGINAL language spoken. Format: [MM:SS - MM:SS] Text."
+                prompt = """Provide a HIGHLY DETAILED, FULL word-by-word transcript with timestamps in the ORIGINAL language spoken. 
+                Do NOT summarize. Do NOT skip any spoken sentences. 
+                Format strictly as: [MM:SS - MM:SS] Text."""
                 
                 # Retry mechanism (up to 3 times) to handle Gemini API transient errors
                 max_retries = 3
