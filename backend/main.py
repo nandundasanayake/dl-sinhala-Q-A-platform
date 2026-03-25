@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from google import genai
+import platform
 from google.genai import types
 from dotenv import load_dotenv
 from opensearchpy import OpenSearch, RequestsHttpConnection
@@ -19,6 +20,10 @@ from pydantic import BaseModel
 from typing import List
 from datetime import datetime
 import urllib.parse
+
+# Cross-platform FFmpeg paths
+FFMPEG_CMD = "ffmpeg" if platform.system() == "Windows" else "/usr/bin/ffmpeg"
+FFPROBE_CMD = "ffprobe" if platform.system() == "Windows" else "/usr/bin/ffprobe"
 
 # Load environment variables from the .env file
 load_dotenv()
@@ -101,10 +106,10 @@ def setup_opensearch_index():
         print(f"⚠️ OpenSearch Connection Warning: {e}")
 
 def get_video_duration_seconds(video_url):
-    """Get raw video duration in seconds using ffprobe with remote URL."""
+    """Get raw video duration in seconds using ffprobe from the remote URL."""
     try:
         result = subprocess.run(
-            ["/usr/bin/ffmpeg", "-v", "error", "-show_entries", "format=duration", 
+            [FFPROBE_CMD, "-v", "error", "-show_entries", "format=duration", 
              "-of", "default=noprint_wrappers=1:nokey=1", video_url],
             capture_output=True, text=True, timeout=60
         )
@@ -132,7 +137,7 @@ def generate_and_upload_thumbnail(video_url, video_id, time_offset=5):
         
         # Use FFmpeg to extract a frame from the remote video URL
         subprocess.run([
-            "/usr/bin/ffmpeg", "-y", "-ss", str(time_offset), "-i", video_url,
+            FFMPEG_CMD, "-y", "-ss", str(time_offset), "-i", video_url,
             "-vframes", "1", "-q:v", "2", "-vf", "scale=320:180", temp_jpg
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
         
@@ -296,7 +301,7 @@ def process_video_background(video_id: str):
             
             # Fast-copy split using FFmpeg streaming from the presigned S3 URL
             subprocess.run([
-                "/usr/bin/ffmpeg", "-y", "-i", video_url,
+                FFMPEG_CMD, "-y", "-i", video_url,
                 "-ss", str(start_time), "-t", str(CHUNK_DURATION),
                 "-c", "copy", chunk_file
             ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
