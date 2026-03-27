@@ -150,148 +150,59 @@ export const VideoWatch: React.FC = () => {
     setCurrentVideoTime(time);
   };
 
-  const cleanContent = (content: string): string => {
-    // Remove multiple consecutive newlines (3 or more) and replace with single newline
-    let cleaned = content.replace(/\n{3,}/g, '\n\n');
-    
-    // Remove empty lines that contain only whitespace
-    cleaned = cleaned.replace(/^\s*$\n/gm, '');
-    
-    // Remove spaces before timestamps
-    cleaned = cleaned.replace(/\s*\n\s*(\d{2}:\d{2})/g, '\n$1');
-    
-    return cleaned;
-  };
-
   const renderMessageContent = (content: string) => {
-    // First, clean the content to remove extra blank lines
-    let processedContent = cleanContent(content);
+    // Clean the content
+    let processedContent = content.replace(/\n{3,}/g, '\n\n');
     
-    // Step 1: Convert the specific format "⏱️ [▶ Play Video (HH:MM:SS - HH:MM:SS)]" 
-    // to individual timestamp buttons (only showing start time)
-    
-    // Handle timestamps with hours (HH:MM:SS format)
-    const timestampWithHoursRegex = /⏱️\s*\[▶ Play Video\s*\((\d{2}:\d{2}:\d{2})\s*-\s*(\d{2}:\d{2}:\d{2})\)\]/g;
-    
-    // Handle timestamps without hours (MM:SS format)
-    const timestampWithoutHoursRegex = /⏱️\s*\[▶ Play Video\s*\((\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})\)\]/g;
-    
-    // Replace both formats with a placeholder marker that we'll parse later
-    // This ensures we don't lose any timestamps during other transformations
-    processedContent = processedContent.replace(timestampWithHoursRegex, (match, start, end) => {
-      return `⏱️_TIMESTAMP_${start}_${end}`;
-    });
-    
-    processedContent = processedContent.replace(timestampWithoutHoursRegex, (match, start, end) => {
-      return `⏱️_TIMESTAMP_${start}_${end}`;
-    });
-    
-    // Now handle the existing transformations for other timestamp formats
-    // Convert standalone timestamps (like "07:50\n08:31") into proper format
+    // Safety fallback: Fix the problematic format if it appears
     processedContent = processedContent.replace(
-      /(\d{2}:\d{2})\s*\n\s*(\d{2}:\d{2})/g,
-      (match, start, end) => {
-        return `⏱️_TIMESTAMP_${start}_${end}`;
-      }
+      /⏱️\s*\[▶ Play Video\s+\((\d{2}:\d{2}(?::\d{2})?)\),\s*(\d{2}:\d{2}(?::\d{2})?)\]/g,
+      '⏱️ [▶ Play Video ($1 - $2)]'
     );
     
-    // Convert timestamps in format "07:50 - 08:31" that aren't already wrapped
-    processedContent = processedContent.replace(
-      /(?<!⏱️_TIMESTAMP_)(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})(?!_)/g,
-      (match, start, end) => {
-        return `⏱️_TIMESTAMP_${start}_${end}`;
-      }
-    );
+    // Parse all 4 formats with a single combined regex
+    // Matches: ⏱️ [▶ Play Video (TIMESTAMP - TIMESTAMP), (TIMESTAMP - TIMESTAMP), ...]
+    const timestampRegex = /⏱️\s*\[▶ Play Video\s+((?:\((\d{2}:\d{2}(?::\d{2})?)\s*-\s*(\d{2}:\d{2}(?::\d{2})?)\),?\s*)+)\]/g;
     
-    // Pattern 1: Handle combined timestamps with one "▶ Play Video" and multiple timestamps
-    const pattern1 = /⏱️\s*\[▶ Play Video\s*\(([^)]+)\)(?:,\s*\(([^)]+)\))*\]/g;
-    
-    processedContent = processedContent.replace(pattern1, (match: string) => {
-      const timestampRegex = /(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})/g;
-      const timestamps: Array<{start: string; end: string}> = [];
-      let timestampMatch;
-      
-      while ((timestampMatch = timestampRegex.exec(match)) !== null) {
-        timestamps.push({
-          start: timestampMatch[1],
-          end: timestampMatch[2]
-        });
-      }
-      
-      const newBlocks = timestamps.map(ts => {
-        return `⏱️_TIMESTAMP_${ts.start}_${ts.end}`;
-      });
-      
-      return '\n' + newBlocks.join('\n');
-    });
-    
-    // Pattern 2: Handle combined timestamps with multiple "▶ Play Video" in one line
-    const pattern2 = /⏱️\s*\[▶ Play Video\s*\(([^)]+)\)\],?\s*⏱️\s*\[▶ Play Video\s*\(([^)]+)\)\]/g;
-    
-    processedContent = processedContent.replace(pattern2, (match: string, ts1: string, ts2: string) => {
-      const timeMatch1 = ts1.match(/(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})/);
-      const timeMatch2 = ts2.match(/(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})/);
-      
-      const blocks = [];
-      if (timeMatch1) {
-        blocks.push(`⏱️_TIMESTAMP_${timeMatch1[1]}_${timeMatch1[2]}`);
-      }
-      if (timeMatch2) {
-        blocks.push(`⏱️_TIMESTAMP_${timeMatch2[1]}_${timeMatch2[2]}`);
-      }
-      
-      return '\n' + blocks.join('\n');
-    });
-    
-    // Pattern 3: Handle format where timestamps are in parentheses without the emoji repeated
-    const pattern3 = /⏱️\s*\[▶ Play Video\s*\(([^)]+)\)(?:,\s*\(([^)]+)\))*\]/g;
-    
-    processedContent = processedContent.replace(pattern3, (match: string) => {
-      const allTimestamps = [];
-      const tsRegex = /(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})/g;
-      let tsMatch;
-      
-      while ((tsMatch = tsRegex.exec(match)) !== null) {
-        allTimestamps.push({
-          start: tsMatch[1],
-          end: tsMatch[2]
-        });
-      }
-      
-      if (allTimestamps.length > 0) {
-        const blocks = allTimestamps.map(ts => 
-          `⏱️_TIMESTAMP_${ts.start}_${ts.end}`
-        );
-        return '\n' + blocks.join('\n');
-      }
-      
-      return match;
-    });
-    
-    // Now parse all the timestamp markers we've created
-    const timestampMarkerRegex = /⏱️_TIMESTAMP_(\d{2}:\d{2}(?::\d{2})?)_(\d{2}:\d{2}(?::\d{2})?)/g;
     const parts: (string | { type: 'timestamp'; startTime: string; endTime: string })[] = [];
     let lastIndex = 0;
     let match: RegExpExecArray | null;
     
-    while ((match = timestampMarkerRegex.exec(processedContent)) !== null) {
+    while ((match = timestampRegex.exec(processedContent)) !== null) {
+      // Add text before this timestamp group
       if (match.index > lastIndex) {
         const textBefore = processedContent.substring(lastIndex, match.index);
-        // Only add if it's not just whitespace
         if (textBefore.trim()) {
           parts.push(textBefore);
         }
       }
       
-      parts.push({
-        type: 'timestamp',
-        startTime: match[1],
-        endTime: match[2]
+      // Extract all timestamp pairs from this group
+      const timestampsGroup = match[1];
+      const timestampPairRegex = /\((\d{2}:\d{2}(?::\d{2})?)\s*-\s*(\d{2}:\d{2}(?::\d{2})?)\)/g;
+      let pairMatch: RegExpExecArray | null;
+      
+      const timestamps: Array<{ start: string; end: string }> = [];
+      while ((pairMatch = timestampPairRegex.exec(timestampsGroup)) !== null) {
+        timestamps.push({
+          start: pairMatch[1],
+          end: pairMatch[2]
+        });
+      }
+      
+      // Add each timestamp as a separate button
+      timestamps.forEach(ts => {
+        parts.push({
+          type: 'timestamp',
+          startTime: ts.start,
+          endTime: ts.end
+        });
       });
       
       lastIndex = match.index + match[0].length;
     }
     
+    // Add remaining text
     if (lastIndex < processedContent.length) {
       const remainingText = processedContent.substring(lastIndex);
       if (remainingText.trim()) {
@@ -299,6 +210,7 @@ export const VideoWatch: React.FC = () => {
       }
     }
     
+    // Render the parts
     return parts.map((part, index) => {
       if (typeof part !== 'string' && part.type === 'timestamp') {
         return (
@@ -316,7 +228,6 @@ export const VideoWatch: React.FC = () => {
       }
       
       const textContent = typeof part === 'string' ? part : '';
-      // Remove any remaining multiple newlines
       const cleanedText = textContent.replace(/\n{2,}/g, '\n');
       
       return (

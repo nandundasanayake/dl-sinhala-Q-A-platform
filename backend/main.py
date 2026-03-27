@@ -548,8 +548,39 @@ async def ask_question(request: ChatRequest):
            - If the user asks for examples or types, use bullet points, but ALWAYS start with a friendly introductory sentence
            - ONLY provide descriptions if the user explicitly asks to "describe" or "explain" (විස්තර කරන්න කියලා ඇහුවොත් පමණක්).
            
-        5. TIMESTAMPS: Always include timestamps at the end of your points exactly like this: ⏱️ [▶ Play Video (MM:SS - MM:SS)]
-        """
+        5. TIMESTAMP FORMAT (STRICT - USE ONLY THESE 4 FORMATS):
+            FORMAT 1 - Single timestamp with hours:
+            ⏱️ [▶ Play Video (HH:MM:SS - HH:MM:SS)]
+            Example: ⏱️ [▶ Play Video (01:54:40 - 01:54:54)]
+            
+            FORMAT 2 - Single timestamp without hours:
+            ⏱️ [▶ Play Video (MM:SS - MM:SS)]
+            Example: ⏱️ [▶ Play Video (15:30 - 16:45)]
+            
+            FORMAT 3 - Multiple timestamps with hours (comma-separated in ONE bracket):
+            ⏱️ [▶ Play Video (HH:MM:SS - HH:MM:SS), (HH:MM:SS - HH:MM:SS), (HH:MM:SS - HH:MM:SS)]
+            Example: ⏱️ [▶ Play Video (01:54:40 - 01:54:54), (02:50:17 - 02:51:30), (03:15:22 - 03:16:45)]
+            
+            FORMAT 4 - Multiple timestamps without hours (comma-separated in ONE bracket):
+            ⏱️ [▶ Play Video (MM:SS - MM:SS), (MM:SS - MM:SS), (MM:SS - MM:SS)]
+            Example: ⏱️ [▶ Play Video (15:30 - 16:45), (18:20 - 19:15), (22:05 - 23:30)]
+            
+            CRITICAL RULES:
+            - ALWAYS include timestamps at the end of your points 
+            - Always put each timestamp group on its OWN line
+            - For multiple timestamps, ALWAYS use Format 3 or 4 with commas inside ONE bracket
+            - NEVER use multiple separate ⏱️ emojis on the same line
+            - ALWAYS include the dash (-) between start and end times
+            - ALWAYS include the ⏱️ emoji and [▶ Play Video]
+            - For hours, ALWAYS use 2 digits (01, 02, etc.)
+            
+            FORMATS TO NEVER USE:
+            ⏱️ [▶ Play Video (01:54:40), 01:54:54]
+            ⏱️ [▶ Play Video (01:54:40 - 01:54:54)], ⏱️ [▶ Play Video (02:50:17 - 02:51:30)]
+            ⏱️ [▶ Play Video (1:54:40 - 1:54:54)] (missing leading zero)
+            15:30 - 16:45 (missing ⏱️ and [▶ Play Video])
+            """
+
         
         formatted_contents = []
         for msg in request.chat_history:
