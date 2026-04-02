@@ -1,3 +1,4 @@
+import redis
 import os
 import time
 import subprocess
@@ -76,6 +77,27 @@ s3_client = boto3.client(
     region_name=os.getenv("AWS_REGION", "us-east-1")
 )
 BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
+
+# 4. Redis Configuration (For Enterprise Caching)
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
+
+try:
+    redis_client = redis.Redis(
+        host=REDIS_HOST, 
+        port=REDIS_PORT, 
+        password=REDIS_PASSWORD, 
+        decode_responses=True 
+    )
+    redis_client.ping()
+    print("✅ Connected to Redis successfully!")
+except Exception as e:
+    print(f"⚠️ Redis connection failed: {e}. Falling back to in-memory dictionary cache.")
+    redis_client = None
+
+# Fallback in-memory cache
+chat_response_cache: Dict[str, str] = {}
 
 # --- Helper Functions ---
 
@@ -480,18 +502,30 @@ async def process_video(request: ProcessVideoRequest, background_tasks: Backgrou
 
 @app.post("/api/chat")
 async def ask_question(request: ChatRequest):
-    """Retrieves relevant context via Vector Search and generates a tailored response using Gemini Flash Lite with conversational memory and Caching."""
+    """Retrieves relevant context via Vector Search and generates a tailored response using Gemini Flash Lite with conversational memory, Redis Caching, and Streaming."""
     try:
-        # 1. CHECK CACHE
+        # 1. CHECK CACHE (REDIS OR IN-MEMORY FALLBACK)
         history_str = "".join([m.content for m in request.chat_history[-2:]])
         raw_key = f"{request.video_id}_{request.question}_{history_str}"
         cache_key = hashlib.md5(raw_key.encode()).hexdigest()
 
-        if cache_key in chat_response_cache:
+        cached_answer = None
+        # Check Redis first
+        if 'redis_client' in globals() and redis_client:
+            try:
+                cached_answer = redis_client.get(cache_key)
+            except:
+                pass
+        
+        # If not in Redis, check memory fallback
+        if not cached_answer and cache_key in chat_response_cache:
+            cached_answer = chat_response_cache[cache_key]
+
+        if cached_answer:
             print(f"⚡ Returning from Cache! Saved API cost for: {request.question}")
             # For cached responses, return as a simple stream
             async def cached_stream():
-                yield chat_response_cache[cache_key]
+                yield cached_answer
             return StreamingResponse(cached_stream(), media_type='text/plain')
 
         # 2. NORMAL PROCESS & QUERY REWRITE
@@ -612,29 +646,41 @@ async def ask_question(request: ChatRequest):
                 if chunk.text:
                     full_response += chunk.text
                     yield chunk.text
-            
-            # Save to cache after streaming is complete
-            chat_response_cache[cache_key] = full_response
+
+            # Save to cache after streaming is complete (Redis with 7d TTL or Memory Fallback)
+            if 'redis_client' in globals() and redis_client:
+                try:
+                    redis_client.setex(cache_key, 604800, full_response)
+                except:
+                    chat_response_cache[cache_key] = full_response
+            else:
+                chat_response_cache[cache_key] = full_response
         
         return StreamingResponse(generate_stream(), media_type='text/plain')
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.delete("/api/chat/clear/{video_id}")
 async def clear_chat_cache(video_id: str):
-    """Clears the chat response cache for a specific video."""
+    """Clears the chat response cache (from Redis or Memory)."""
     try:
-        global chat_response_cache
-        # Clear all cache entries (since we can't easily match hashed keys to video_id)
-        # In a production system, you'd want to store video_id alongside the cache entry
-        initial_count = len(chat_response_cache)
-        chat_response_cache = {}
-        
+        message = ""
+        # Try clearing Redis first
+        if 'redis_client' in globals() and redis_client:
+            redis_client.flushdb()  # Clears Redis Database
+            message = f"Redis Cache cleared successfully for video context."
+        else:
+            # Fallback to clearing memory cache
+            global chat_response_cache
+            initial_count = len(chat_response_cache)
+            chat_response_cache = {}
+            message = f"In-memory cache cleared. {initial_count} entries removed."
+            
         return {
             "status": "success", 
-            "message": f"Chat cache cleared for video: {video_id}",
-            "cleared_entries": initial_count
+            "message": message
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

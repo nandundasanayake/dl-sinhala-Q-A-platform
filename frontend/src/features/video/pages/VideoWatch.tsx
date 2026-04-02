@@ -98,11 +98,26 @@ export const VideoWatch: React.FC = () => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory]);
 
-  const handleClearChat = () => {
+  const handleClearChat = async () => {
     setChatHistory([]);
     localStorage.removeItem(`chat_${videoId}`);
-  };
 
+    if (videoId) {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/chat/clear/${videoId}`, {
+          method: 'DELETE',
+        });
+        
+        if (response.ok) {
+          console.log('Backend cache cleared successfully!');
+        } else {
+          console.error('Failed to clear backend cache');
+        }
+      } catch (error) {
+        console.error('Error clearing backend cache:', error);
+      }
+    }
+  };
 
   useEffect(() => {
     if (seekToTime !== null && processedSeekRef.current !== seekToTime) {
