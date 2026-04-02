@@ -513,11 +513,22 @@ async def ask_question(request: ChatRequest):
         )
         vector = result.embeddings[0].values
         
-        # OpenSearch Vector Search
+        # OpenSearch Hybrid Search (Vector k-NN + Keyword Match)
         search_query = {
-            "size": 15, "query": {
-                "bool": {"filter": [{"term": {"video_id": request.video_id}}],
-                         "must": [{"knn": {"embedding": {"vector": vector, "k": 15}}}]}
+            "size": 10,
+            "query": {
+                "bool": {
+                    "filter": [
+                        {"term": {"video_id": request.video_id}}
+                    ],
+                    "should": [
+                        # 1. Vector Search (Finds the contextual meaning)
+                        {"knn": {"embedding": {"vector": vector, "k": 10}}},
+                        # 2. Keyword Search (Finds EXACT Sinhala biology terms, boosted x2)
+                        {"match": {"text_chunk": {"query": search_query_text, "boost": 2.0}}}
+                    ],
+                    "minimum_should_match": 1
+                }
             }
         }
         
@@ -545,27 +556,31 @@ async def ask_question(request: ChatRequest):
             - Use bold text, bullet points, and short paragraphs to make the text highly readable.
             - ALWAYS start with a friendly, encouraging introductory sentence.
             
-        4. TIMESTAMP FORMATTING (ABSOLUTE MANDATORY):
-            - You MUST ONLY use the exact format provided below. Do not use any other format.
-            - EVERY major point, paragraph, or bullet point MUST end with its corresponding timestamp.
-            - Do NOT put timestamps on a new empty line. They MUST be at the end of the text line.
+        4. TIMESTAMP FORMATTING (ABSOLUTE MANDATORY - OVERRIDE DEFAULT CITATIONS):
+            - You MUST override your default citation style. DO NOT output raw times like "22:30" or "[22:30]" on a new line.
+            - You MUST ONLY use the EXACT format provided below. Failure to do so will break the application UI.
+            - EVERY major point, paragraph, or bullet point MUST END with its corresponding timestamp on the SAME LINE.
             
             Format for a single timestamp:
-            Text explaining the point goes here. ⏱️ [▶ Play Video (MM:SS - MM:SS)]
+            Text explaining the point goes here. ⏱️ [▶ Play Video (HH:MM:SS - HH:MM:SS)]
             
             Format for multiple timestamps (MUST be inside ONE bracket, separated by commas):
-            Text explaining the point goes here. ⏱️ [▶ Play Video (MM:SS - MM:SS), (MM:SS - MM:SS)]
+            Text explaining the point goes here. ⏱️ [▶ Play Video (HH:MM:SS - HH:MM:SS), (HH:MM:SS - HH:MM:SS)]
             
             EXAMPLES OF CORRECT USAGE:
-            * විභාජක පටක කියන්නේ තවමත් විභේදනය නොවූ සෛල වලින් සමන්විත පටක වර්ගයක්. ⏱️ [▶ Play Video (22:30 - 22:49)]
+            * විභාජක පටක කියන්නේ තවමත් විභේදනය නොවූ සෛල වලින් සමන්විත පටක වර්ගයක්. ⏱️ [▶ Play Video (00:22:30 - 00:22:49)]
             * චර්මීය පටක ශාක දේහයේ බාහිරම ආවරණය සකස් කරයි. ⏱️ [▶ Play Video (01:54:27 - 01:54:45), (01:55:30 - 01:55:39)]
             
-            NEVER DO THIS:
-            [22:30 - 22:49] (Missing emojis and text)
-            ⏱️ [▶ Play Video (MM:SS - MM:SS)] (On a new line by itself)
-            ⏱️ [▶ Play Video (MM:SS - MM:SS)], ⏱️ [▶ Play Video (MM:SS - MM:SS)] (Repeating the emoji/text)
+            STRICT BANS (NEVER DO THESE):
+            - NEVER print just the time (e.g., 22:30 or 01:54:27).
+            - NEVER put the time on a new empty line.
+            - NEVER forget the ⏱️ emoji and the [▶ Play Video ] text.
 
-        5. SINHALA TONE & STYLE (CRITICAL - MUST USE STRICTLY SPOKEN SINHALA): 
+        5. PREVENT HALLUCINATIONS & LOOPS (CRITICAL FOR VIDEO):
+            - IGNORE ON-SCREEN TEXT: Do NOT transcribe or mention any text or software menus visible on the video screen (e.g., "Annotation mode", "Save", "Quit"). Focus ONLY on the spoken audio.
+            - PREVENT REPETITION LOOPS: If there is a long silence or background noise, DO NOT continuously repeat filler words like "හරි" (Hari) or "ඕකේ" (Okay). Just SKIP the silent segments completely.
+
+        6. SINHALA TONE & STYLE (CRITICAL - MUST USE STRICTLY SPOKEN SINHALA): 
            - You MUST write in everyday, natural Spoken Sinhala (කතා කරන භාෂාව) exactly as a friendly Sri Lankan teacher speaks in a classroom.
            - NEVER use formal written Sinhala endings (ග්‍රන්ථාරූඪ භාෂාව). 
            - STRICTLY FORBIDDEN WORDS/ENDINGS: Do not use "වේ", "ඇත", "කරයි", "සහ", "හා", "අතර", "වන්නේය". 
