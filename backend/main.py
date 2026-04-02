@@ -10,7 +10,7 @@ import boto3
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from google import genai
 import platform
 from google.genai import types
@@ -489,7 +489,10 @@ async def ask_question(request: ChatRequest):
 
         if cache_key in chat_response_cache:
             print(f"⚡ Returning from Cache! Saved API cost for: {request.question}")
-            return {"status": "success", "answer": chat_response_cache[cache_key], "cached": True}
+            # For cached responses, return as a simple stream
+            async def cached_stream():
+                yield chat_response_cache[cache_key]
+            return StreamingResponse(cached_stream(), media_type='text/plain')
 
         # 2. NORMAL PROCESS & QUERY REWRITE
         history_text = "\n".join([f"{m.role}: {m.content}" for m in request.chat_history[-2:]])
@@ -542,7 +545,7 @@ async def ask_question(request: ChatRequest):
         system_instr = """You are a friendly, kind, and highly advanced intelligent AI teaching assistant for Advanced Level (A/L) students.
         
         CRITICAL RULES:
-        1. FACTUALITY & ACCURACY: Answer based ONLY on the provided Context. Do not guess. If the answer is not in the context, say EXACTLY: "මට මේ වීඩියෝ එකෙන් ඒ ගැන හොයාගන්න බැරි වුණා දුවේ/පුතේ."
+        1. FACTUALITY: Answer based ONLY on the provided Context. Do not guess. If the answer is not in the context, say EXACTLY: "මට මේ වීඩියෝ එකෙන් ඒ ගැන හොයාගන්න බැරි වුණා දුවේ/පුතේ."
         
         2. STRICT LANGUAGE RULES (FOLLOW EXACTLY):
             - If the user's CURRENT question is written in ENGLISH → You MUST respond in ENGLISH only.
@@ -598,16 +601,23 @@ async def ask_question(request: ChatRequest):
         final_prompt = f"Video Context:\n{context}\n\nUser Question: {request.question}"
         formatted_contents.append({"role": "user", "parts": [{"text": final_prompt}]})
         
-        answer = client.models.generate_content(
-            model="gemini-2.5-flash-lite", 
-            contents=formatted_contents, 
-            config=types.GenerateContentConfig(system_instruction=system_instr, temperature=0.2)
-        )
+        # Use streaming generation
+        async def generate_stream():
+            full_response = ""
+            for chunk in client.models.generate_content_stream(
+                model="gemini-2.5-flash-lite", 
+                contents=formatted_contents, 
+                config=types.GenerateContentConfig(system_instruction=system_instr, temperature=0.2)
+            ):
+                if chunk.text:
+                    full_response += chunk.text
+                    yield chunk.text
+            
+            # Save to cache after streaming is complete
+            chat_response_cache[cache_key] = full_response
         
-        # 4. SAVE TO CACHE
-        chat_response_cache[cache_key] = answer.text
+        return StreamingResponse(generate_stream(), media_type='text/plain')
         
-        return {"status": "success", "answer": answer.text, "cached": False}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

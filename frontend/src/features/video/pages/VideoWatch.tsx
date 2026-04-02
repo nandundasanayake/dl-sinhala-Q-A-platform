@@ -272,30 +272,24 @@ export const VideoWatch: React.FC = () => {
         }),
       });
 
-      const data = await response.json();
-      console.log('API response:', data);
-
-      if (response.ok) {
-        const assistantMessage: ChatMessage = { 
-          role: 'assistant', 
-          content: data.answer 
-        };
-        const updatedHistory = [...newHistory, assistantMessage];
-        setChatHistory(updatedHistory);
-        localStorage.setItem(`chat_${videoId}`, JSON.stringify(updatedHistory));
-      } else {
-         // Handle different error types
+      if (!response.ok) {
+        // Handle error responses (non-streaming)
         let errorMessage = '';
         
-        if (response.status === 429) {
-          // Rate limit error
-          errorMessage = getRateLimitMessage(data);
-        } else if (response.status === 503 || response.status === 504) {
-          errorMessage = 'Service temporarily unavailable. Please try again in a few moments.';
-        } else if (response.status === 500) {
-          errorMessage = 'Server error. Our team has been notified. Please try again later.';
-        } else {
-          errorMessage = `Error: ${data.detail || 'Something went wrong'}`;
+        try {
+          const errorData = await response.json();
+          
+          if (response.status === 429) {
+            errorMessage = getRateLimitMessage(errorData);
+          } else if (response.status === 503 || response.status === 504) {
+            errorMessage = 'Service temporarily unavailable. Please try again in a few moments.';
+          } else if (response.status === 500) {
+            errorMessage = 'Server error. Our team has been notified. Please try again later.';
+          } else {
+            errorMessage = `Error: ${errorData.detail || 'Something went wrong'}`;
+          }
+        } catch {
+          errorMessage = `Error: ${response.statusText || 'Something went wrong'}`;
         }
         
         const errorMessageObj: ChatMessage = { 
@@ -303,10 +297,83 @@ export const VideoWatch: React.FC = () => {
           content: errorMessage
         };
         setChatHistory([...newHistory, errorMessageObj]);
-       
+        setIsTyping(false);
+        return;
       }
-      console.log('Updated chat history:', [...newHistory, { role: 'assistant', content: data.answer }]);
+
+      // Handle streaming response
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('Response body is not readable');
+      }
+
+      const decoder = new TextDecoder('utf-8');
+      let accumulatedContent = '';
+      let displayedContent = '';
+
+      // Hide typing indicator once streaming starts
+      setIsTyping(false);
+
+      // Add initial empty assistant message
+      const assistantMessage: ChatMessage = { 
+        role: 'assistant', 
+        content: '' 
+      };
+      setChatHistory([...newHistory, assistantMessage]);
+
+      // Function to display characters one by one with typewriter effect
+      const typewriterDisplay = async (text: string) => {
+        for (const char of text) {
+          displayedContent += char;
+          const currentDisplayed = displayedContent;
+          
+          setChatHistory(prevHistory => {
+            const updatedHistory = [...prevHistory];
+            const lastIndex = updatedHistory.length - 1;
+            if (lastIndex >= 0 && updatedHistory[lastIndex].role === 'assistant') {
+              updatedHistory[lastIndex] = {
+                ...updatedHistory[lastIndex],
+                content: currentDisplayed
+              };
+            }
+            return updatedHistory;
+          });
+          
+          // Small delay between characters for smooth typewriter effect
+          await new Promise(resolve => setTimeout(resolve, 15));
+        }
+      };
+
+      // Read the stream and display character by character
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (done) {
+          break;
+        }
+
+        // Decode the chunk
+        const chunk = decoder.decode(value, { stream: true });
+        accumulatedContent += chunk;
+        
+        // Display each character with typewriter effect
+        await typewriterDisplay(chunk);
+      }
+
+      // Final decode to flush any remaining bytes
+      const finalChunk = decoder.decode();
+      if (finalChunk) {
+        accumulatedContent += finalChunk;
+        await typewriterDisplay(finalChunk);
+      }
+
+      // Save final history to localStorage
+      const finalHistory = [...newHistory, { role: 'assistant' as const, content: accumulatedContent }];
+      localStorage.setItem(`chat_${videoId}`, JSON.stringify(finalHistory));
+      console.log('Stream completed. Final content length:', accumulatedContent.length);
+
     } catch (error) {
+      console.error('Chat error:', error);
       const errorMessage: ChatMessage = { 
         role: 'assistant', 
         content: `Network Error: Could not connect.` 
