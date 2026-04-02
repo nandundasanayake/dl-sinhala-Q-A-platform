@@ -66,7 +66,8 @@ opensearch_client = OpenSearch(
     connection_class=RequestsHttpConnection,
     timeout=60,
     max_retries=5,
-    retry_on_timeout=True
+    retry_on_timeout=True,
+    pool_maxsize=20
 )
 INDEX_NAME = "video-transcripts-index"
 
@@ -257,7 +258,7 @@ def split_into_chunks(text, target_words=200, overlap_words=50):
     Groups sentences until a target word count (~200-300 tokens) is reached,
     maintaining a semantic overlap to preserve context between chunks.
     """
-    
+
     lines = [line.strip() for line in text.strip().split('\n') if line.strip()]
     
     chunks = []
