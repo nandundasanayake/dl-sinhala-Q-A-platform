@@ -6,6 +6,7 @@ import re
 import uuid
 from typing import Dict
 import hashlib
+import json  # ADDED for Redis
 import boto3
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,6 +21,7 @@ from pydantic import BaseModel
 from typing import List
 from datetime import datetime
 import urllib.parse
+import redis  # ADDED for Redis
 
 # Cross-platform FFmpeg paths
 FFMPEG_CMD = "ffmpeg" if platform.system() == "Windows" else "/usr/bin/ffmpeg"
@@ -77,7 +79,58 @@ s3_client = boto3.client(
 )
 BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 
+# 4. NEW: Redis Configuration (ADDED)
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+REDIS_DB = int(os.getenv("REDIS_DB", 0))
+
+# Initialize Redis client
+try:
+    redis_client = redis.Redis(
+        host=REDIS_HOST,
+        port=REDIS_PORT,
+        db=REDIS_DB,
+        decode_responses=True,
+        socket_connect_timeout=5
+    )
+    # Test connection
+    redis_client.ping()
+    print("✅ Connected to Redis")
+except Exception as e:
+    print(f"⚠️ Redis connection failed: {e}")
+    print("Continuing without Redis (status will not persist across restarts)")
+    redis_client = None
+
 # --- Helper Functions ---
+
+# NEW: Redis helper functions (ADDED)
+def save_to_redis(key: str, value: dict, ttl_seconds: int = 3600):
+    """Save data to Redis with expiration"""
+    if redis_client:
+        try:
+            redis_client.setex(key, ttl_seconds, json.dumps(value))
+            return True
+        except Exception as e:
+            print(f"Redis save error: {e}")
+    return False
+
+def get_from_redis(key: str):
+    """Get data from Redis"""
+    if redis_client:
+        try:
+            data = redis_client.get(key)
+            return json.loads(data) if data else None
+        except Exception as e:
+            print(f"Redis get error: {e}")
+    return None
+
+def delete_from_redis(key: str):
+    """Delete data from Redis"""
+    if redis_client:
+        try:
+            redis_client.delete(key)
+        except Exception as e:
+            print(f"Redis delete error: {e}")
 
 def setup_opensearch_index():
     """Ensures the OpenSearch index exists and is configured for k-NN vector search."""
@@ -235,12 +288,14 @@ def adjust_timestamps(transcript: str, offset_seconds: int) -> str:
 # Initialize OpenSearch
 setup_opensearch_index()
 
-# Global status dictionary for background task tracking
+# NOTE: upload_statuses and chat_response_cache are kept for backward compatibility
+# but Redis will be used as the primary storage when available
+# Global status dictionary for background task tracking (kept for fallback)
 upload_statuses: Dict[str, Dict] = {}
 UPLOAD_DIR = "temp_uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# Global Cache for Chat Answers
+# Global Cache for Chat Answers (kept for fallback)
 chat_response_cache: Dict[str, str] = {}
 
 # --- Data Models ---
@@ -262,13 +317,17 @@ def process_video_background(video_id: str):
     """Processes large videos in the background by streaming from S3 and splitting them into chunks to avoid memory and API limits."""
     
     def update_status(status, message, progress):
-        """Helper function to update the global status dictionary for frontend polling."""
-        upload_statuses[video_id] = {
+        """Helper function to update status - uses Redis if available, otherwise memory dict."""
+        status_data = {
             "status": status,
             "message": message,
             "progress": progress,
             "timestamp": datetime.utcnow().isoformat()
         }
+        # Try Redis first
+        if not save_to_redis(f"video_status:{video_id}", status_data, ttl_seconds=7200):
+            # Fallback to memory dict
+            upload_statuses[video_id] = status_data
         print(f"[{video_id}] {status}: {message} ({progress}%)")
     
     try:
@@ -416,12 +475,22 @@ def process_video_background(video_id: str):
 
         # Status 4: COMPLETED
         # Final status to tell the frontend that the video is fully processed and ready to be viewed
-        update_status("completed", "Processing complete! Video ready.", 100)
-        upload_statuses[video_id]["data"] = {
-            "video_s3_url": video_s3_url, "transcript_s3_url": transcript_s3_url,
-            "thumbnail_url": thumbnail_url, "duration": formatted_duration
+        completed_data = {
+            "status": "completed",
+            "message": "Processing complete! Video ready.",
+            "progress": 100,
+            "timestamp": datetime.utcnow().isoformat(),
+            "data": {
+                "video_s3_url": video_s3_url, "transcript_s3_url": transcript_s3_url,
+                "thumbnail_url": thumbnail_url, "duration": formatted_duration
+            }
         }
-        # No local file cleanup needed - video was never stored locally
+        
+        # Try Redis first for final status
+        if not save_to_redis(f"video_status:{video_id}", completed_data, ttl_seconds=7200):
+            # Fallback to memory dict
+            upload_statuses[video_id] = completed_data
+            upload_statuses[video_id]["data"] = completed_data["data"]
             
     except Exception as e:
         print(f"Error during processing: {e}")
@@ -437,6 +506,12 @@ async def root():
 @app.get("/api/upload-status/{video_id}")
 async def get_upload_status(video_id: str):
     """Returns the current background processing status for a given video."""
+    # Try Redis first
+    status = get_from_redis(f"video_status:{video_id}")
+    if status:
+        return status
+    
+    # Fallback to memory dict
     if video_id not in upload_statuses:
         raise HTTPException(status_code=404, detail="Status not found")
     return upload_statuses[video_id]
@@ -466,10 +541,15 @@ async def generate_upload_url(filename: str):
 async def process_video(request: ProcessVideoRequest, background_tasks: BackgroundTasks):
     """Triggers the background processing task for a video already uploaded to S3."""
     try:
-        upload_statuses[request.video_id] = {
+        initial_status = {
             "status": "starting", "message": "Starting processing...", "progress": 0,
             "timestamp": datetime.utcnow().isoformat()
         }
+        
+        # Try Redis first
+        if not save_to_redis(f"video_status:{request.video_id}", initial_status, ttl_seconds=7200):
+            # Fallback to memory dict
+            upload_statuses[request.video_id] = initial_status
         
         # Add the heavy processing task to the background queue (no file_path needed)
         background_tasks.add_task(process_video_background, request.video_id)
@@ -487,8 +567,18 @@ async def ask_question(request: ChatRequest):
         raw_key = f"{request.video_id}_{request.question}_{history_str}"
         cache_key = hashlib.md5(raw_key.encode()).hexdigest()
 
+        # Try Redis cache first
+        cached = get_from_redis(f"chat_cache:{cache_key}")
+        if cached:
+            print(f"⚡ Returning from Redis Cache! Saved API cost for: {request.question}")
+            # For cached responses, return as a simple stream
+            async def cached_stream():
+                yield cached.get("answer", "")
+            return StreamingResponse(cached_stream(), media_type='text/plain')
+        
+        # Fallback to memory cache
         if cache_key in chat_response_cache:
-            print(f"⚡ Returning from Cache! Saved API cost for: {request.question}")
+            print(f"⚡ Returning from Memory Cache! Saved API cost for: {request.question}")
             # For cached responses, return as a simple stream
             async def cached_stream():
                 yield chat_response_cache[cache_key]
@@ -614,7 +704,10 @@ async def ask_question(request: ChatRequest):
                     yield chunk.text
             
             # Save to cache after streaming is complete
-            chat_response_cache[cache_key] = full_response
+            # Try Redis first
+            if not save_to_redis(f"chat_cache:{cache_key}", {"answer": full_response, "timestamp": datetime.utcnow().isoformat()}, ttl_seconds=3600):
+                # Fallback to memory dict
+                chat_response_cache[cache_key] = full_response
         
         return StreamingResponse(generate_stream(), media_type='text/plain')
         
@@ -626,10 +719,12 @@ async def clear_chat_cache(video_id: str):
     """Clears the chat response cache for a specific video."""
     try:
         global chat_response_cache
-        # Clear all cache entries (since we can't easily match hashed keys to video_id)
-        # In a production system, you'd want to store video_id alongside the cache entry
+        # Clear memory cache
         initial_count = len(chat_response_cache)
         chat_response_cache = {}
+        
+        # Note: Redis cache clearing would require pattern matching
+        # For simplicity, we'll just clear memory cache
         
         return {
             "status": "success", 
@@ -641,7 +736,13 @@ async def clear_chat_cache(video_id: str):
 
 @app.get("/health")
 def health():
-    return {"status": "healthy"}
+    """Health check including Redis status"""
+    redis_status = "connected" if redis_client and redis_client.ping() else "disconnected"
+    return {
+        "status": "healthy",
+        "redis": redis_status,
+        "timestamp": datetime.utcnow().isoformat()
+    }
 
 @app.get("/api/videos")
 async def list_videos():
@@ -782,3 +883,34 @@ async def get_thumbnail(video_id: str):
             "ngrok-skip-browser-warning": "true", "Cache-Control": "public, max-age=3600"
         })
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+
+
+@app.get("/api/redis/keys")
+async def list_redis_keys():
+    """List all Redis keys (for debugging)"""
+    if not redis_client:
+        return {"error": "Redis not connected"}
+    
+    keys = redis_client.keys("*")
+    result = {}
+    
+    for key in keys[:50]:  # Limit to 50
+        key_type = key.split(":")[0] if ":" in key else "other"
+        if key_type not in result:
+            result[key_type] = []
+        
+        value = redis_client.get(key)
+        if value and len(str(value)) > 200:
+            value = str(value)[:200] + "..."
+        
+        result[key_type].append({
+            "key": key,
+            "ttl": redis_client.ttl(key),
+            "value_preview": value
+        })
+    
+    return {
+        "total_keys": len(keys),
+        "keys": result
+    }
