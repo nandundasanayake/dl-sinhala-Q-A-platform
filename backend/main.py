@@ -22,7 +22,6 @@ from pydantic import BaseModel
 from typing import List
 from datetime import datetime
 import urllib.parse
-import redis  # ADDED for Redis
 
 # Cross-platform FFmpeg paths
 FFMPEG_CMD = "ffmpeg" if platform.system() == "Windows" else "/usr/bin/ffmpeg"
@@ -83,66 +82,36 @@ BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 # 4. Redis Configuration (For Enterprise Caching)
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
-
-try:
-    redis_client = redis.Redis(
-        host=REDIS_HOST, 
-        port=REDIS_PORT, 
-        password=REDIS_PASSWORD, 
-        decode_responses=True 
-    )
-    redis_client.ping()
-    print("✅ Connected to Redis successfully!")
-except Exception as e:
-    print(f"⚠️ Redis connection failed: {e}. Falling back to in-memory dictionary cache.")
-    redis_client = None
-
-# Fallback in-memory cache
-chat_response_cache: Dict[str, str] = {}
-
-# 4. Redis Configuration (For Enterprise Caching)
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
-
-try:
-    redis_client = redis.Redis(
-        host=REDIS_HOST, 
-        port=REDIS_PORT, 
-        password=REDIS_PASSWORD, 
-        decode_responses=True 
-    )
-    redis_client.ping()
-    print("✅ Connected to Redis successfully!")
-except Exception as e:
-    print(f"⚠️ Redis connection failed: {e}. Falling back to in-memory dictionary cache.")
-    redis_client = None
-
-# Fallback in-memory cache
-chat_response_cache: Dict[str, str] = {}
-
-# 4. NEW: Redis Configuration (ADDED)
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_DB = int(os.getenv("REDIS_DB", 0))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
 
-# Initialize Redis client
+# Cache TTL constants (using their 7 days for production)
+CHAT_CACHE_TTL = int(os.getenv("CHAT_CACHE_TTL", 604800))  # 7 days default
+STATUS_CACHE_TTL = int(os.getenv("STATUS_CACHE_TTL", 7200))  # 2 hours
+EMBEDDING_CACHE_TTL = int(os.getenv("EMBEDDING_CACHE_TTL", 7200))  # 2 hours
+
 try:
+
     redis_client = redis.Redis(
-        host=REDIS_HOST,
+        host=REDIS_HOST, 
         port=REDIS_PORT,
-        db=REDIS_DB,
+        db=REDIS_DB, 
+        password=REDIS_PASSWORD, 
         decode_responses=True,
         socket_connect_timeout=5
     )
-    # Test connection
     redis_client.ping()
-    print("✅ Connected to Redis")
+    print("✅ Connected to Redis successfully!")
 except Exception as e:
-    print(f"⚠️ Redis connection failed: {e}")
-    print("Continuing without Redis (status will not persist across restarts)")
+    print(f"⚠️ Redis connection failed: {e}. Falling back to in-memory dictionary cache.")
     redis_client = None
+
+# Fallback in-memory cache
+upload_statuses: Dict[str, Dict] = {}
+chat_response_cache: Dict[str, str] = {}
+UPLOAD_DIR = "temp_uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
 
 # --- Helper Functions ---
 
@@ -331,16 +300,6 @@ def adjust_timestamps(transcript: str, offset_seconds: int) -> str:
 # Initialize OpenSearch
 setup_opensearch_index()
 
-# NOTE: upload_statuses and chat_response_cache are kept for backward compatibility
-# but Redis will be used as the primary storage when available
-# Global status dictionary for background task tracking (kept for fallback)
-upload_statuses: Dict[str, Dict] = {}
-UPLOAD_DIR = "temp_uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-# Global Cache for Chat Answers (kept for fallback)
-chat_response_cache: Dict[str, str] = {}
-
 # --- Data Models ---
 class ChatMessage(BaseModel):
     role: str
@@ -368,9 +327,9 @@ def process_video_background(video_id: str):
             "timestamp": datetime.utcnow().isoformat()
         }
         # Try Redis first
-        if not save_to_redis(f"video_status:{video_id}", status_data, ttl_seconds=7200):
+        if not save_to_redis(f"video_status:{video_id}", status_data, ttl_seconds=STATUS_CACHE_TTL):
             # Fallback to memory dict
-            upload_statuses[video_id] = status_data
+            upload_statuses[video_id] = status_data 
         print(f"[{video_id}] {status}: {message} ({progress}%)")
     
     try:
@@ -530,10 +489,9 @@ def process_video_background(video_id: str):
         }
         
         # Try Redis first for final status
-        if not save_to_redis(f"video_status:{video_id}", completed_data, ttl_seconds=7200):
+        if not save_to_redis(f"video_status:{video_id}", completed_data, ttl_seconds=STATUS_CACHE_TTL):
             # Fallback to memory dict
             upload_statuses[video_id] = completed_data
-            upload_statuses[video_id]["data"] = completed_data["data"]
             
     except Exception as e:
         print(f"Error during processing: {e}")
@@ -590,7 +548,7 @@ async def process_video(request: ProcessVideoRequest, background_tasks: Backgrou
         }
         
         # Try Redis first
-        if not save_to_redis(f"video_status:{request.video_id}", initial_status, ttl_seconds=7200):
+        if not save_to_redis(f"video_status:{request.video_id}", initial_status, ttl_seconds=STATUS_CACHE_TTL):
             # Fallback to memory dict
             upload_statuses[request.video_id] = initial_status
         
@@ -610,23 +568,18 @@ async def ask_question(request: ChatRequest):
         raw_key = f"{request.video_id}_{request.question}_{history_str}"
         cache_key = hashlib.md5(raw_key.encode()).hexdigest()
 
-        cached_answer = None
-        # Check Redis first
-        if 'redis_client' in globals() and redis_client:
-            try:
-                cached_answer = redis_client.get(cache_key)
-            except:
-                pass
-        
-        # If not in Redis, check memory fallback
-        if not cached_answer and cache_key in chat_response_cache:
-            cached_answer = chat_response_cache[cache_key]
-
-        if cached_answer:
-            print(f"⚡ Returning from Cache! Saved API cost for: {request.question}")
-            # For cached responses, return as a simple stream
+        cached = get_from_redis(f"chat_cache:{cache_key}")
+        if cached:
+            print(f"⚡ Returning from Redis Cache! Saved API cost for: {request.question}")
             async def cached_stream():
-                yield cached_answer
+                yield cached.get("answer", "")
+            return StreamingResponse(cached_stream(), media_type='text/plain')
+        
+        # Fallback to memory cache
+        if cache_key in chat_response_cache:
+            print(f"⚡ Returning from Memory Cache! Saved API cost for: {request.question}")
+            async def cached_stream():
+                yield chat_response_cache[cache_key]
             return StreamingResponse(cached_stream(), media_type='text/plain')
 
         # 2. NORMAL PROCESS & QUERY REWRITE
@@ -748,15 +701,13 @@ async def ask_question(request: ChatRequest):
                     full_response += chunk.text
                     yield chunk.text
 
-            # Save to cache after streaming is complete (Redis with 7d TTL or Memory Fallback)
-            if 'redis_client' in globals() and redis_client:
-                try:
-                    redis_client.setex(cache_key, 604800, full_response)
-                except:
-                    chat_response_cache[cache_key] = full_response
-            else:
+            # Save to cache after streaming is complete - USING HELPER FUNCTION
+            if not save_to_redis(f"chat_cache:{cache_key}", {
+                "answer": full_response,
+                "timestamp": datetime.utcnow().isoformat()
+            }, ttl_seconds=CHAT_CACHE_TTL):
                 chat_response_cache[cache_key] = full_response
-        
+                    
         return StreamingResponse(generate_stream(), media_type='text/plain')
         
     except Exception as e:
@@ -768,16 +719,24 @@ async def clear_chat_cache(video_id: str):
     """Clears the chat response cache (from Redis or Memory)."""
     try:
         message = ""
-        # Try clearing Redis first
-        if 'redis_client' in globals() and redis_client:
-            redis_client.flushdb()  # Clears Redis Database
-            message = f"Redis Cache cleared successfully for video context."
-        else:
-            # Fallback to clearing memory cache
-            global chat_response_cache
-            initial_count = len(chat_response_cache)
-            chat_response_cache = {}
-            message = f"In-memory cache cleared. {initial_count} entries removed."
+        cleared_count = 0
+
+        # Clear memory cache
+        global chat_response_cache
+        cleared_count = len(chat_response_cache)
+        chat_response_cache = {}
+        message = f"Memory cache cleared. {cleared_count} entries removed."
+        
+        # For Redis, delete only chat-related keys (NOT flushdb - that's dangerous!)
+        if redis_client:
+            try:
+                # Only delete chat_cache keys, not everything!
+                keys = redis_client.keys("chat_cache:*")
+                for key in keys:
+                    redis_client.delete(key)
+                message += f" Redis chat cache cleared. {len(keys)} keys removed."
+            except Exception as e:
+                message += f" Could not clear Redis cache: {e}"
             
         return {
             "status": "success", 
@@ -793,6 +752,7 @@ def health():
     return {
         "status": "healthy",
         "redis": redis_status,
+        "redis_db": REDIS_DB,
         "timestamp": datetime.utcnow().isoformat()
     }
 
