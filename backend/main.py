@@ -214,7 +214,7 @@ async def clear_chat_cache(video_id: str):
     try:
         message = ""
         cleared_count = len(chat_response_cache)
-        chat_response_cache = {}
+        chat_response_cache.clear()
         message = f"Memory cache cleared. {cleared_count} entries removed."
         
         if redis_client:
