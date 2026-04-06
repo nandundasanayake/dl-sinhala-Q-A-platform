@@ -166,52 +166,45 @@ export const VideoWatch: React.FC = () => {
   };
 
   const renderMessageContent = (content: string) => {
-    // Clean the content
-    let processedContent = content.replace(/\n{3,}/g, '\n\n');
+    let processedContent = content;
     
-    // Safety fallback: Fix the problematic format if it appears
-    processedContent = processedContent.replace(
-      /⏱️\s*\[▶ Play Video\s+\((\d{2}:\d{2}(?::\d{2})?)\),\s*(\d{2}:\d{2}(?::\d{2})?)\]/g,
-      '⏱️ [▶ Play Video ($1 - $2)]'
-    );
+    // Clean up excessive newlines
+    processedContent = processedContent.replace(/\n{3,}/g, '\n\n');
     
-    // Parse all 4 formats with a single combined regex
-    // Matches: ⏱️ [▶ Play Video (TIMESTAMP - TIMESTAMP), (TIMESTAMP - TIMESTAMP), ...]
-    const timestampRegex = /⏱️\s*\[▶ Play Video\s+((?:\((\d{2}:\d{2}(?::\d{2})?)\s*-\s*(\d{2}:\d{2}(?::\d{2})?)\),?\s*)+)\]/g;
+    // Match ANY timestamp pattern in the text
+    // This regex finds patterns like:
+    // - 01:15 - 02:30
+    // - 01:15:30 - 01:18:45
+    // - [01:15 - 02:30]
+    // - (01:15 - 02:30)
+    // - 01:15-02:30 (no spaces)
+    const timestampRegex = /(?:\[|\()?(\d{1,2}:\d{2}(?::\d{2})?)\s*[-–—]\s*(\d{1,2}:\d{2}(?::\d{2})?)(?:\]|\))?/g;
     
-    const parts: (string | { type: 'timestamp'; startTime: string; endTime: string })[] = [];
+    const parts: Array<{ type: 'text' | 'timestamp'; content: string; startTime?: string; endTime?: string }> = [];
     let lastIndex = 0;
     let match: RegExpExecArray | null;
     
+    // Reset regex lastIndex to ensure we find all matches
+    timestampRegex.lastIndex = 0;
+    
     while ((match = timestampRegex.exec(processedContent)) !== null) {
-      // Add text before this timestamp group
+      // Add text before this timestamp
       if (match.index > lastIndex) {
         const textBefore = processedContent.substring(lastIndex, match.index);
         if (textBefore.trim()) {
-          parts.push(textBefore);
+          parts.push({ type: 'text', content: textBefore });
         }
       }
       
-      // Extract all timestamp pairs from this group
-      const timestampsGroup = match[1];
-      const timestampPairRegex = /\((\d{2}:\d{2}(?::\d{2})?)\s*-\s*(\d{2}:\d{2}(?::\d{2})?)\)/g;
-      let pairMatch: RegExpExecArray | null;
+      // Add the timestamp as a clickable button
+      const startTime = match[1];
+      const endTime = match[2];
       
-      const timestamps: Array<{ start: string; end: string }> = [];
-      while ((pairMatch = timestampPairRegex.exec(timestampsGroup)) !== null) {
-        timestamps.push({
-          start: pairMatch[1],
-          end: pairMatch[2]
-        });
-      }
-      
-      // Add each timestamp as a separate button
-      timestamps.forEach(ts => {
-        parts.push({
-          type: 'timestamp',
-          startTime: ts.start,
-          endTime: ts.end
-        });
+      parts.push({
+        type: 'timestamp',
+        content: `${startTime} - ${endTime}`,
+        startTime: startTime,
+        endTime: endTime
       });
       
       lastIndex = match.index + match[0].length;
@@ -221,43 +214,47 @@ export const VideoWatch: React.FC = () => {
     if (lastIndex < processedContent.length) {
       const remainingText = processedContent.substring(lastIndex);
       if (remainingText.trim()) {
-        parts.push(remainingText);
+        parts.push({ type: 'text', content: remainingText });
       }
     }
     
-    // Render the parts
-    return parts.map((part, index) => {
-      if (typeof part !== 'string' && part.type === 'timestamp') {
-        return (
-          <div key={index} className="inline-flex flex-row gap-1 mr-1 mb-3 mt-1 mx-0">
-            <button 
-              onClick={() => handleSeek(part.startTime)}
-              className="inline-flex items-center gap-1.2 bg-accent text-brand px-2 py-1 rounded-md text-xs font-medium hover:bg-accent/80 transition-colors border border-border"
-              title={`Click to play video from ${part.startTime}`}
-            >
-              <PlayCircle className="w-3 h-3" />
-              {part.startTime}
-            </button>
-          </div>
-        );
-      }
-      
-      const textContent = typeof part === 'string' ? part : '';
-      const cleanedText = textContent.replace(/\n{2,}/g, '\n');
-      
+    // If no timestamps found, just render the text
+    if (parts.length === 0) {
       return (
-        <span key={index} className="leading-none">
-          {cleanedText.split('\n').map((line: string, i: number) => (
-            <React.Fragment key={i}>
-              <span dangerouslySetInnerHTML={{ 
-                __html: line.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') 
-              }} />
-              {i !== cleanedText.split('\n').length - 1 && <br />}
-            </React.Fragment>
-          ))}
-        </span>
+        <span dangerouslySetInnerHTML={{ 
+          __html: processedContent.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                                 .replace(/\n/g, '<br />')
+        }} />
       );
-    });
+    }
+    
+    // Render the parts with timestamps as buttons
+    return (
+      <>
+        {parts.map((part, index) => {
+          if (part.type === 'timestamp' && part.startTime) {
+            return (
+              <button
+                key={index}
+                onClick={() => handleSeek(part.startTime!)}
+                className="inline-flex items-center gap-1 bg-accent text-brand px-2 py-1 rounded-md text-xs font-medium hover:bg-accent/80 transition-colors border border-border mx-0.5 my-0.5"
+                title={`Play from ${part.startTime}`}
+              >
+                <PlayCircle className="w-3 h-3" />
+                {part.startTime}
+              </button>
+            );
+          }
+          
+          return (
+            <span key={index} dangerouslySetInnerHTML={{
+              __html: part.content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                                 .replace(/\n/g, '<br />')
+            }} />
+          );
+        })}
+      </>
+    );
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
