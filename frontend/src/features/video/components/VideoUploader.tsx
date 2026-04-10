@@ -82,13 +82,15 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
               }
               setUploadStatus('success');
               setProgress(100);
+
+              const videoTitle = statusData.data?.original_title || statusData.original_title || title || file?.name || '';
               
               // Add to store
               addVideo({
                 id: videoIdRef.current!,
                 video_id: videoIdRef.current!,
                 originalVideoId: videoIdRef.current!,
-                title: title || file?.name || '',
+                title: videoTitle,
                 fileName: file?.name || '',
                 uploadedAt: new Date(),
                 duration: statusData.data?.duration || '00:00',
@@ -196,7 +198,7 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
         return;
       }
 
-      const { upload_url, video_id } = await urlResponse.json();
+      const { upload_url, video_id, original_filename } = await urlResponse.json();
       videoIdRef.current = video_id;
 
       // Step 2: Direct upload to S3 using PUT request
@@ -244,7 +246,10 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ video_id }),
+        body: JSON.stringify({ 
+          video_id: video_id,
+          original_title: title || original_filename  // Send the original title
+        }),
       });
 
       if (!processResponse.ok) {

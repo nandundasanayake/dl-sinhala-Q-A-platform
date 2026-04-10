@@ -63,6 +63,9 @@ async def get_upload_status(video_id: str):
 
 @app.get("/api/generate-upload-url")
 async def generate_upload_url(filename: str):
+    # Keep original filename for display purposes
+    original_filename = filename
+
     safe_filename = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', filename.replace(" ", "_"))
     unique_id = str(uuid.uuid4())[:8]
     video_id = f"{unique_id}---{safe_filename}"
@@ -73,7 +76,7 @@ async def generate_upload_url(filename: str):
             Params={'Bucket': BUCKET_NAME, 'Key': f"videos/{video_id}"},
             ExpiresIn=21600
         )
-        return {"upload_url": presigned_url, "video_id": video_id}
+        return {"upload_url": presigned_url, "video_id": video_id, "original_filename": original_filename}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -87,7 +90,7 @@ async def process_video(request: ProcessVideoRequest, background_tasks: Backgrou
         if not save_to_redis(f"video_status:{request.video_id}", initial_status, ttl_seconds=STATUS_CACHE_TTL):
             upload_statuses[request.video_id] = initial_status
         
-        background_tasks.add_task(process_video_background, request.video_id)
+        background_tasks.add_task(process_video_background, request.video_id, request.original_title)
         return {"status": "processing", "video_id": request.video_id, "message": "Processing started"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -245,6 +248,35 @@ async def list_videos():
     try:
         response = s3_client.list_objects_v2(Bucket=BUCKET_NAME, Prefix="videos/")
         videos = []
+
+        # First, try to get titles from OpenSearch
+        title_map = {}
+        if opensearch_client:
+            try:
+                # Get all unique video_ids with their titles from OpenSearch
+                search = {
+                    "size": 0,
+                    "aggs": {
+                        "videos": {
+                            "terms": {"field": "video_id", "size": 100},
+                            "aggs": {
+                                "latest_title": {
+                                    "top_hits": {
+                                        "size": 1,
+                                        "_source": ["original_title"]
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                result = opensearch_client.search(index=INDEX_NAME, body=search)
+                for bucket in result['aggregations']['videos']['buckets']:
+                    if bucket.get('latest_title', {}).get('hits', {}).get('hits'):
+                        title_map[bucket['key']] = bucket['latest_title']['hits']['hits'][0]['_source'].get('original_title', '')
+            except Exception as e:
+                print(f"Warning: Could not fetch titles from OpenSearch: {e}")
+
         if 'Contents' in response:
             for obj in response['Contents']:
                 video_key = obj['Key']
@@ -270,8 +302,14 @@ async def list_videos():
                         duration = res['hits']['hits'][0]['_source'].get('duration', '0:00')
                 except: pass
                 
-                display_name = video_filename.split("---")[-1] if "---" in video_filename else video_filename
-                title = display_name.replace(".mp4", "").replace(".mov", "").replace(".avi", "").replace("_", " ").title()
+                # Get title from OpenSearch first
+                title = title_map.get(video_filename)
+                
+                # Fallback to extracting from filename if no title in OpenSearch
+                if not title:
+                    display_name = video_filename.split("---")[-1] if "---" in video_filename else video_filename
+                    title = display_name.replace(".mp4", "").replace(".mov", "").replace(".avi", "").replace("_", " ").title()
+
                 videos.append({
                     "id": video_filename, 
                     "video_id": video_filename,

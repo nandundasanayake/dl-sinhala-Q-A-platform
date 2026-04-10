@@ -1,6 +1,6 @@
 # models/schemas.py
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 
 class ChatMessage(BaseModel):
     role: str
@@ -13,3 +13,4 @@ class ChatRequest(BaseModel):
 
 class ProcessVideoRequest(BaseModel):
     video_id: str
+    original_title: Optional[str] = None  # Add this line

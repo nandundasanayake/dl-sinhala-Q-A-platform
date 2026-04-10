@@ -59,7 +59,7 @@ def generate_and_upload_thumbnail(video_url, video_id, time_offset=5):
             os.remove(temp_jpg)
         return None
 
-def process_video_background(video_id: str):
+def process_video_background(video_id: str, original_title: str = None):
     """Processes large videos in the background by streaming from S3 and splitting them into chunks to avoid memory and API limits."""
     
     def update_status(status, message, progress):
@@ -77,6 +77,12 @@ def process_video_background(video_id: str):
         print(f"[{video_id}] {status}: {message} ({progress}%)")
     
     try:
+        # Extract original_title from video_id if not provided
+        if not original_title:
+            # Try to extract from video_id (format: unique_id---original_name)
+            if "---" in video_id:
+                original_title = video_id.split("---")[-1].replace(".mp4", "").replace("_", " ")
+
         # Status 1: UPLOADING
         update_status("uploading", "Processing video from cloud storage...", 10)
         
@@ -201,7 +207,8 @@ def process_video_background(video_id: str):
                         "video_s3_url": video_s3_url, 
                         "transcript_s3_url": transcript_s3_url,
                         "duration": formatted_duration, 
-                        "embedding": vector
+                        "embedding": vector,
+                        "original_title": original_title  # Store original title
                     })
             except Exception as e:
                 pass 

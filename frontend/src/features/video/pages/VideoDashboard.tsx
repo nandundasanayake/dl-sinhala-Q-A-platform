@@ -20,6 +20,7 @@ export const VideoDashboard: React.FC = () => {
     if (!location.state?.fromWatch || videos.length === 0) {
       loadVideos();
     }
+    console.log("videos in dashboard ", videos);
   }, [location.state]);
 
   const handleRefresh = () => {
@@ -125,9 +126,9 @@ export const VideoDashboard: React.FC = () => {
               onClick={() => setIsUploaderOpen(true)}
             />
 
-            {filteredVideos.map((video) => (
+            {filteredVideos.map((video, index) => (
               <VideoCard
-                key={video.id}
+                key={`${video.id}-${index}`}
                 id={video.id}
                 title={video.title}
                 duration={video.duration}
