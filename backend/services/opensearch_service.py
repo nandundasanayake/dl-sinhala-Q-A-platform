@@ -105,7 +105,7 @@ def init_opensearch():
         if env == "local":
             print(f"✅ OpenSearch client initialized with Basic Auth")
         else:
-            print(f"✅ OpenSearch client initialized with IAM role")
+            print(f"✅ OpenSearch client initialized with IAM role", flush=True)
             
         print(f"   Host: {host}:443")
         return True
