@@ -83,7 +83,7 @@ def init_opensearch():
             auth = (os.getenv("OPENSEARCH_USER"), os.getenv("OPENSEARCH_PASS"))
         else:
             credentials = boto3.Session().get_credentials()
-            auth = AWS4Auth(credentials.access_key, credentials.secret_key, region, service, session_token=credentials.token)
+            auth = AWS4Auth(region=region, service=service, refreshable_credentials=credentials)
 
         client = OpenSearch(
             hosts=[{'host': host, 'port': 443}],
