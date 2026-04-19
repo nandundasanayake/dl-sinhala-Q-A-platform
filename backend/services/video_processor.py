@@ -3,6 +3,7 @@ import time
 import subprocess
 import math
 import os
+import traceback
 from datetime import datetime
 from typing import Dict
 from google.genai import types
@@ -229,5 +230,6 @@ def process_video_background(video_id: str, original_title: str = None):
             upload_statuses[video_id] = completed_data
             
     except Exception as e:
-        print(f"Error during processing: {e}")
+        print(f"\n❌ FATAL ERROR IN BACKGROUND TASK: {str(e)}")
+        traceback.print_exc()
         update_status("error", f"Processing failed: {str(e)}", 0)
