@@ -1,0 +1,10 @@
+Provide a HIGHLY DETAILED, FULL transcript with timestamps in the ORIGINAL language spoken. 
+CRITICAL RULES:
+1. Format strictly as:
+    - For videos under 1 hour: Use [MM:SS - MM:SS] (e.g., [01:15 - 02:30])
+    - For videos over 1 hour: Use [HH:MM:SS - HH:MM:SS] (e.g., [01:15:30 - 01:18:45])
+2. Do NOT leave spaces inside the brackets (e.g., use [01:15 - 02:30], NOT [ 01:15 - 02:30 ]).
+3. Do NOT print the timestamp twice in a row. 
+4. Do NOT summarize or skip any spoken sentences.
+5. IGNORE ON-SCREEN TEXT: Do NOT transcribe any text or software menus visible on the video screen (e.g., "Annotation mode"). Focus ONLY on transcribing the spoken audio.
+6. PREVENT REPETITION LOOPS: If there is a long silence or background noise, DO NOT hallucinate or continuously repeat filler words like "හරි" (Hari) or "ඕකේ" (Okay). Just SKIP the silent segments completely.
