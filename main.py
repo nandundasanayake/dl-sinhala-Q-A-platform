@@ -19,6 +19,19 @@ from services.gemini_service import client as gemini_client, get_chat_system_pro
 from services.video_processor import process_video_background, generate_and_upload_thumbnail
 from models.schemas import ChatMessage, ChatRequest, ProcessVideoRequest
 
+def build_s3_key(folder_path: str, filename: str) -> str:
+    """Safely constructs S3 key by stripping leading/trailing slashes from folder_path."""
+    if not folder_path or folder_path.strip() == "":
+        return filename
+    # Strip leading and trailing slashes from folder_path
+    clean_folder = folder_path.strip().strip('/')
+    return f"{clean_folder}/{filename}" if clean_folder else filename
+
+def build_video_s3_key(folder_path: str, filename: str) -> str:
+    """Constructs S3 key for videos with raw/ prefix."""
+    base_key = build_s3_key(folder_path, filename)
+    return f"raw/{base_key}"
+
 # Initialize services
 init_redis()
 init_opensearch()
@@ -62,7 +75,7 @@ async def get_upload_status(video_id: str):
     return upload_statuses[video_id]
 
 @app.get("/api/generate-upload-url")
-async def generate_upload_url(filename: str):
+async def generate_upload_url(filename: str, folder_path: str = ""):
     # Keep original filename for display purposes
     original_filename = filename
 
@@ -70,13 +83,16 @@ async def generate_upload_url(filename: str):
     unique_id = str(uuid.uuid4())[:8]
     video_id = f"{unique_id}---{safe_filename}"
     
+    # Videos are stored in raw/ folder
+    s3_key = build_video_s3_key(folder_path, video_id)
+    
     try:
         presigned_url = s3_client.generate_presigned_url(
             'put_object',
-            Params={'Bucket': BUCKET_NAME, 'Key': f"videos/{video_id}"},
+            Params={'Bucket': BUCKET_NAME, 'Key': s3_key},
             ExpiresIn=21600
         )
-        return {"upload_url": presigned_url, "video_id": video_id, "original_filename": original_filename}
+        return {"upload_url": presigned_url, "video_id": video_id, "s3_key": s3_key, "original_filename": original_filename}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -90,7 +106,8 @@ async def process_video(request: ProcessVideoRequest, background_tasks: Backgrou
         if not save_to_redis(f"video_status:{request.video_id}", initial_status, ttl_seconds=STATUS_CACHE_TTL):
             upload_statuses[request.video_id] = initial_status
         
-        background_tasks.add_task(process_video_background, request.video_id, request.original_title)
+        folder_path = getattr(request, 'folder_path', '')
+        background_tasks.add_task(process_video_background, request.video_id, request.original_title, folder_path)
         return {"status": "processing", "video_id": request.video_id, "message": "Processing started"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -246,7 +263,8 @@ def health():
 @app.get("/api/videos")
 async def list_videos():
     try:
-        response = s3_client.list_objects_v2(Bucket=BUCKET_NAME, Prefix="videos/")
+        # Videos are stored in raw/ folder
+        response = s3_client.list_objects_v2(Bucket=BUCKET_NAME, Prefix="raw/")
         videos = []
 
         # First, try to get titles from OpenSearch
@@ -280,7 +298,8 @@ async def list_videos():
         if 'Contents' in response:
             for obj in response['Contents']:
                 video_key = obj['Key']
-                video_filename = video_key.replace('videos/', '')
+                # Remove raw/ prefix and get filename
+                video_filename = video_key.replace('raw/', '').split('/')[-1]
                 
                 video_url = f"https://{BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{video_key}"
                 
@@ -327,10 +346,11 @@ async def list_videos():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/videos/{video_id}")
-async def get_video(video_id: str):
+async def get_video(video_id: str, folder_path: str = ""):
     try:
         video_id = urllib.parse.unquote(video_id)
-        video_key = f"videos/{video_id}"
+        # Videos are stored in raw/ folder
+        video_key = build_video_s3_key(folder_path, video_id)
         video_url = f"https://{BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{video_key}"
         
         try:
@@ -362,11 +382,13 @@ async def get_video(video_id: str):
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/videos/{video_id}")
-async def delete_video(video_id: str):
+async def delete_video(video_id: str, folder_path: str = ""):
     try:
         video_id = urllib.parse.unquote(video_id)
         
-        s3_client.delete_object(Bucket=BUCKET_NAME, Key=f"videos/{video_id}")
+        # Videos are stored in raw/ folder
+        video_key = build_video_s3_key(folder_path, video_id)
+        s3_client.delete_object(Bucket=BUCKET_NAME, Key=video_key)
         s3_client.delete_object(Bucket=BUCKET_NAME, Key=f"thumbnails/{video_id}.jpg")
         try: 
             s3_client.delete_object(Bucket=BUCKET_NAME, Key=f"transcripts/{video_id}.txt")
