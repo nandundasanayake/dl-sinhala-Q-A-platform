@@ -99,6 +99,7 @@ def process_video_background(video_id: str, original_title: str = None):
         CHUNK_DURATION = 900
         total_parts = math.ceil(duration_sec / CHUNK_DURATION) if duration_sec > 0 else 1
         full_transcript = ""
+        all_chunk_summaries = []
         prompt = get_transcription_prompt()
 
         for i in range(total_parts):
@@ -129,6 +130,17 @@ def process_video_background(video_id: str, original_title: str = None):
                 adjusted_transcript = adjust_timestamps(response.text, int(start_time))
                 full_transcript += adjusted_transcript + "\n\n"
                 
+                # MAP PHASE: Generate chunk summary
+                try:
+                    summary_prompt = f"""Summarize the following transcript segment into 3-4 bullet points focusing on core educational concepts. Include the start time. Transcript: {adjusted_transcript}"""
+                    summary_response = client.models.generate_content(
+                        model="gemini-2.5-flash",
+                        contents=summary_prompt
+                    )
+                    all_chunk_summaries.append(summary_response.text)
+                except Exception as summary_e:
+                    print(f"⚠️ Summary generation failed for chunk {i}: {summary_e}")
+                
                 # Cleanup Gemini file & Local chunk
                 client.files.delete(name=video_file_gemini.name)
                 if os.path.exists(chunk_file): os.remove(chunk_file)
@@ -140,6 +152,49 @@ def process_video_background(video_id: str, original_title: str = None):
                 print(f"❌ Error in chunk {i}: {chunk_e}")
                 traceback.print_exc()
                 continue
+
+        # REDUCE PHASE: Generate final roadmap
+        formatted_roadmap = ""
+        if all_chunk_summaries:
+            try:
+                update_status("processing", "Generating video roadmap...", 75)
+                merged_summaries = "\n\n".join(all_chunk_summaries)
+                
+                # Read roadmap prompt from text file
+                prompt_path = os.path.join(os.path.dirname(__file__), '..', 'prompts', 'Roadmap_prompt.txt')
+                with open(prompt_path, 'r', encoding='utf-8') as file:
+                    prompt_template = file.read()
+                    
+                print("\n" + "═" * 60)
+                print("📝 MERGED SUMMARIES (ADMIN DEBUG VIEW)")
+                print("═" * 60)
+                print(merged_summaries)
+                print("═" * 60 + "\n")
+
+                roadmap_prompt = prompt_template.format(merged_summaries=merged_summaries)
+                
+                roadmap_response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=roadmap_prompt
+                )
+                
+                import json
+                roadmap_text = roadmap_response.text.strip()
+                if roadmap_text.startswith("```json"):
+                    roadmap_text = roadmap_text[7:-3].strip()
+                elif roadmap_text.startswith("```"):
+                    roadmap_text = roadmap_text[3:-3].strip()
+                
+                roadmap_json = json.loads(roadmap_text)
+                formatted_roadmap = json.dumps(roadmap_json, ensure_ascii=False)
+                print(f"✅ Roadmap generated for {video_id}")
+            except Exception as roadmap_e:
+                print(f"⚠️ Roadmap generation failed: {roadmap_e}")
+                traceback.print_exc()
+        
+        # Append roadmap to transcript
+        if formatted_roadmap:
+            full_transcript += f"\n\n=== VIDEO ROADMAP ===\n\n{formatted_roadmap}"
 
         # 5. Save Transcript & Index to OpenSearch
         update_status("transcript_generated", "Indexing to OpenSearch...", 80)

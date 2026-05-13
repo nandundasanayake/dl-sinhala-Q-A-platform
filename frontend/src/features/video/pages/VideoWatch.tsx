@@ -257,11 +257,13 @@ export const VideoWatch: React.FC = () => {
     );
   };
 
-  const handleSendMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!question.trim() || !videoId) return;
+  const handleSendMessage = async (e?: React.FormEvent, overrideMessage?: string) => {
+    if (e) e.preventDefault();
+    
+    const messageToSend = overrideMessage || question;
+    if (!messageToSend.trim() || !videoId) return;
 
-    const currentQuestion = question;
+    const currentQuestion = messageToSend;
     setQuestion('');
     
     const userMessage: ChatMessage = { 
@@ -557,7 +559,18 @@ export const VideoWatch: React.FC = () => {
           </div>
 
           <div className="p-4 bg-card border-t border-border rounded-b-2xl">
-            <form onSubmit={handleSendMessage} className="flex gap-2">
+            {chatHistory.length === 0 && (
+              <div className="flex justify-center w-full mb-3">
+                <button
+                  onClick={() => handleSendMessage(undefined, 'roadmap')}
+                  className="px-4 py-2 bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100 rounded-full text-sm font-medium transition-all duration-200 flex items-center gap-2"
+                >
+                  <span>පාඩම් සැලැස්ම පෙන්වන්න</span>
+                  <span>🗺️</span>
+                </button>
+              </div>
+            )}
+            <form onSubmit={(e) => handleSendMessage(e)} className="flex gap-2">
               <input
                 type="text"
                 value={question}

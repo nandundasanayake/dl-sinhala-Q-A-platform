@@ -17,6 +17,7 @@ from services.opensearch_service import init_opensearch, setup_opensearch_index,
 from services.s3_service import s3_client
 from services.gemini_service import client as gemini_client, get_chat_system_prompt, get_rewrite_prompt_template
 from services.video_processor import process_video_background, generate_and_upload_thumbnail
+from prompts.Roadmap_prompt import ROADMAP_KEYWORDS, ROADMAP_HEADER, ROADMAP_CHAPTER_BULLET, ROADMAP_SUBTOPIC_BULLET, ROADMAP_VERTICAL_CONNECTOR, ROADMAP_CLOSING_MESSAGE, ROADMAP_NOT_FOUND_MESSAGE
 from models.schemas import ChatMessage, ChatRequest, ProcessVideoRequest
 
 # Initialize services
@@ -104,6 +105,82 @@ async def ask_question(request: ChatRequest):
     print(f"❓ Question: {request.question}")
     print(f"📜 Chat History Length: {len(request.chat_history)} messages")
     try:
+        # ROADMAP INTERCEPTION
+        question_lower = request.question.lower()
+        
+        if any(keyword in question_lower for keyword in ROADMAP_KEYWORDS):
+            print("\n🗺️ ROADMAP REQUEST DETECTED - Checking transcript...")
+            
+            # Fetch transcript from S3
+            transcript_key = f"transcripts/{request.video_id}.txt"
+            try:
+                transcript_obj = s3_client.get_object(Bucket=BUCKET_NAME, Key=transcript_key)
+                transcript_text = transcript_obj['Body'].read().decode('utf-8')
+                
+                # Check if roadmap exists in transcript
+                if "=== VIDEO ROADMAP ===" in transcript_text:
+                    print("✅ Roadmap found in transcript - Serving directly")
+                    roadmap_section = transcript_text.split("=== VIDEO ROADMAP ===")[1].strip()
+                    
+                    try:
+                        import json
+                        roadmap_json = json.loads(roadmap_section)
+                        
+                        # Handle wrapping: extract list from dict or use directly
+                        if isinstance(roadmap_json, dict):
+                            roadmap_list = roadmap_json.get("roadmap") or roadmap_json.get("chapters") or []
+                        elif isinstance(roadmap_json, list):
+                            roadmap_list = roadmap_json
+                        else:
+                            roadmap_list = []
+                        
+                        # Build vertical timeline roadmap
+                        formatted_text = f"{ROADMAP_HEADER}\n\n"
+                        
+                        for idx, item in enumerate(roadmap_list, 1):
+                            chapter_title = (
+                                item.get("chapter_title") or 
+                                item.get("title") or 
+                                item.get("topic") or 
+                                item.get("chapter") or 
+                                f"Chapter {idx}"
+                            )
+                            
+                            formatted_text += f"{ROADMAP_CHAPTER_BULLET} **{idx:02d}. {chapter_title}**\n"
+                            
+                            sub_topics = item.get("sub_topics", []) or item.get("subtopics", [])
+                            if isinstance(sub_topics, list):
+                                for sub in sub_topics:
+                                    if isinstance(sub, str):
+                                        sub_title = sub
+                                    elif isinstance(sub, dict):
+                                        sub_title = sub.get("title") or sub.get("topic") or sub.get("name") or ""
+                                    else:
+                                        continue
+                                    
+                                    if sub_title:
+                                        formatted_text += f"{ROADMAP_SUBTOPIC_BULLET} {sub_title}\n"
+                            
+                            if idx < len(roadmap_list):
+                                formatted_text += f"{ROADMAP_VERTICAL_CONNECTOR}\n"
+                        
+                        formatted_text += ROADMAP_CLOSING_MESSAGE
+                        
+                        async def roadmap_stream():
+                            yield formatted_text
+                        
+                        return StreamingResponse(roadmap_stream(), media_type='text/plain')
+                    except Exception as parse_e:
+                        print(f"⚠️ Roadmap parsing failed: {parse_e}")
+                else:
+                    print("❌ Roadmap not found in transcript")
+            except Exception as e:
+                print(f"⚠️ Could not fetch transcript: {e}")
+            
+            async def no_roadmap_stream():
+                yield ROADMAP_NOT_FOUND_MESSAGE
+            return StreamingResponse(no_roadmap_stream(), media_type='text/plain')
+        
         print("\n📍 STEP 1: Checking Cache")
         history_str = "".join([m.content for m in request.chat_history[-2:]])
         raw_key = f"{request.video_id}_{request.question}_{history_str}"
