@@ -565,7 +565,7 @@ export const VideoWatch: React.FC = () => {
                   onClick={() => handleSendMessage(undefined, 'roadmap')}
                   className="px-4 py-2 bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100 rounded-full text-sm font-medium transition-all duration-200 flex items-center gap-2"
                 >
-                  <span>පාඩම් සැලැස්ම පෙන්වන්න</span>
+                  <span className=' text-center text-sm font-bold'>පාඩම් සැලැස්ම පෙන්වන්න</span>
                   <span>🗺️</span>
                 </button>
               </div>
