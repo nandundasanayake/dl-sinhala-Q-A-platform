@@ -1,0 +1,34 @@
+Based on the following segment summaries from a video lesson, create a concise structured academic roadmap.
+
+Extract only the genuine, core overarching topics. Aim for 4 to 8 main chapters depending on the video's depth. CRITICAL: NEVER exceed a maximum of 10 main chapters. If there are too many concepts, group related smaller concepts together under broader overarching main chapters to keep the roadmap concise and UI-friendly.
+
+Return ONLY a JSON array with this exact structure:
+[
+  {{
+    "chapter_title": "Main chapter title in formal Sinhala",
+    "sub_topics": []
+  }}
+]
+
+STRICT REQUIREMENTS:
+1. 'chapter_title' must be in highly formal, professional academic Sinhala (max 6-8 words)
+2. AGGRESSIVELY MINIMIZE SUB-TOPICS: Default to an empty array [] for 'sub_topics' for almost all chapters
+3. WHEN TO USE SUB-TOPICS: ONLY use sub-topics when the text explicitly lists distinct categories, types, or clear examples (e.g., Types of traps: Pitcher plant, Sundew)
+4. WHEN TO AVOID SUB-TOPICS: NEVER use sub-topics to list general facts, descriptions, or explanations. For example, if the chapter is about "Habitats", do NOT list "wetlands" or "nitrogen deficiency" as sub-topics. Just return an empty []
+5. If you DO include sub-topics, each must be extremely concise - maximum 3-5 words per sub-topic
+6. Use key phrases only, not full sentences (e.g., "පෝෂණ අවශ්යතා" not "ශාකවල පෝෂණ අවශ්යතා පිළිබඳ විස්තරය")
+7. Aim for 4-8 chapters, NEVER exceed 10 chapters maximum
+8. Return ONLY the JSON array, do NOT wrap it in another dictionary
+9. Use scholarly but brief language
+
+CRITICAL TRANSLATION RULES:
+- You MUST translate all English concepts, biological names, and technical terms into proper, formal academic Sinhala
+- DO NOT transliterate English words into Sinhala script
+- NEVER write transliterations like 'කානිවෝරස්' (use 'මාංශ භක්ෂක' instead)
+- NEVER write 'පිචර්' (use 'බාඳුරා ශාකය' instead)
+- NEVER write 'ප්ලාන්ට්ස්' (use 'ශාක' instead)
+- NEVER write 'ඩයිජෙස්ෂන්' (use 'ජීර්ණය' instead)
+- Maintain the strict 3-5 word limit for sub-topics, but ensure they are pure, proper Sinhala translations
+- Use authentic Sinhala terminology, not phonetic English
+
+Summaries: {merged_summaries}
