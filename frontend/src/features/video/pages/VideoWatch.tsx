@@ -26,7 +26,9 @@ export const VideoWatch: React.FC = () => {
   const [isFetchingUrl, setIsFetchingUrl] = useState(false);
   const [seekToTime, setSeekToTime] = useState<number | null>(null);
   const processedSeekRef = useRef<number | null>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null); 
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const userSentMessage = useRef(false);
   const video = getVideoById(videoId || '');
 
   // Fetch signed URL when component mounts
@@ -95,7 +97,22 @@ export const VideoWatch: React.FC = () => {
 
   // Scroll to bottom of chat
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const container = chatScrollRef.current;
+    if (!container) return;
+
+    if (userSentMessage.current) {
+      userSentMessage.current = false;
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      return;
+    }
+  
+    const distanceFromBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+  
+    // Only auto-scroll if user is within 100px of the bottom
+    if (distanceFromBottom < 100) {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [chatHistory]);
 
   const handleClearChat = async () => {
@@ -271,6 +288,7 @@ export const VideoWatch: React.FC = () => {
       content: currentQuestion 
     };
     
+    userSentMessage.current = true; 
     const newHistory = [...chatHistory, userMessage];
     setChatHistory(newHistory);
     setIsTyping(true);
@@ -509,7 +527,7 @@ export const VideoWatch: React.FC = () => {
             )}
           </div>
 
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-muted/30">
+          <div ref={chatScrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 bg-muted/30">
             {chatHistory.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-muted-foreground gap-3">
                 <Bot className="w-12 h-12 text-muted-foreground/30" />
