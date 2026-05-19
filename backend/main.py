@@ -326,21 +326,21 @@ async def list_videos():
         response = s3_client.list_objects_v2(Bucket=BUCKET_NAME, Prefix="videos/")
         videos = []
 
-        # First, try to get titles from OpenSearch
+        # Get titles and durations from OpenSearch
         title_map = {}
+        duration_map = {}
         if opensearch_client:
             try:
-                # Get all unique video_ids with their titles from OpenSearch
                 search = {
                     "size": 0,
                     "aggs": {
                         "videos": {
-                            "terms": {"field": "video_id", "size": 100},
+                            "terms": {"field": "video_id.keyword", "size": 100},
                             "aggs": {
-                                "latest_title": {
+                                "latest_data": {
                                     "top_hits": {
                                         "size": 1,
-                                        "_source": ["original_title"]
+                                        "_source": ["original_title", "duration"]
                                     }
                                 }
                             }
@@ -349,10 +349,12 @@ async def list_videos():
                 }
                 result = opensearch_client.search(index=INDEX_NAME, body=search)
                 for bucket in result['aggregations']['videos']['buckets']:
-                    if bucket.get('latest_title', {}).get('hits', {}).get('hits'):
-                        title_map[bucket['key']] = bucket['latest_title']['hits']['hits'][0]['_source'].get('original_title', '')
+                    if bucket.get('latest_data', {}).get('hits', {}).get('hits'):
+                        source = bucket['latest_data']['hits']['hits'][0]['_source']
+                        title_map[bucket['key']] = source.get('original_title', '')
+                        duration_map[bucket['key']] = source.get('duration', '0:00')
             except Exception as e:
-                print(f"Warning: Could not fetch titles from OpenSearch: {e}")
+                print(f"Warning: Could not fetch data from OpenSearch: {e}")
 
         if 'Contents' in response:
             for obj in response['Contents']:
@@ -371,16 +373,9 @@ async def list_videos():
                 thumbnail_s3_key = f"thumbnails/{video_filename}.jpg"
                 thumbnail_url = f"https://{BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{thumbnail_s3_key}"
                 
-                duration = "0:00"
-                try:
-                    search_query = {"size": 1, "query": {"term": {"video_id": video_filename}}, "_source": ["duration"]}
-                    res = opensearch_client.search(index=INDEX_NAME, body=search_query)
-                    if res['hits']['hits']:
-                        duration = res['hits']['hits'][0]['_source'].get('duration', '0:00')
-                except: pass
-                
-                # Get title from OpenSearch first
+                # Get title and duration from OpenSearch
                 title = title_map.get(video_filename)
+                duration = duration_map.get(video_filename, '0:00')
                 
                 # Fallback to extracting from filename if no title in OpenSearch
                 if not title:
@@ -511,7 +506,7 @@ async def debug_opensearch():
                 "size": 0,
                 "aggs": {
                     "unique_videos": {
-                        "terms": {"field": "video_id", "size": 100}
+                        "terms": {"field": "video_id.keyword", "size": 100}
                     }
                 }
             }
