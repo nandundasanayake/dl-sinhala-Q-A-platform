@@ -19,7 +19,7 @@ OPENSEARCH_HOST = os.getenv("OPENSEARCH_HOST", "localhost")
 OPENSEARCH_PORT = int(os.getenv("OPENSEARCH_PORT", 443))
 OPENSEARCH_USER = os.getenv("OPENSEARCH_USER", "admin")
 OPENSEARCH_PASS = os.getenv("OPENSEARCH_PASS", "admin")
-INDEX_NAME = "video-transcripts-index"
+INDEX_NAME = "video-transcripts-v2"
 
 # AWS S3 Configuration
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")

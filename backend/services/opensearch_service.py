@@ -140,9 +140,16 @@ def setup_opensearch_index():
                         "video_s3_url": {"type": "keyword"},
                         "transcript_s3_url": {"type": "keyword"},
                         "duration": {"type": "keyword"},
+                        "original_title": {"type": "text"},
+                        "thumbnail_url": {"type": "keyword"},
                         "embedding": {
                             "type": "knn_vector",
-                            "dimension": 768
+                            "dimension": 768,
+                            "method": {
+                                "name": "hnsw",
+                                "space_type": "cosinesimil",
+                                "engine": "faiss"
+                            }
                         }
                     }
                 }

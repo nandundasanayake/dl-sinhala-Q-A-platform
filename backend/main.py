@@ -335,7 +335,7 @@ async def list_videos():
                     "size": 0,
                     "aggs": {
                         "videos": {
-                            "terms": {"field": "video_id.keyword", "size": 100},
+                            "terms": {"field": "video_id", "size": 100},
                             "aggs": {
                                 "latest_data": {
                                     "top_hits": {
@@ -506,7 +506,7 @@ async def debug_opensearch():
                 "size": 0,
                 "aggs": {
                     "unique_videos": {
-                        "terms": {"field": "video_id.keyword", "size": 100}
+                        "terms": {"field": "video_id", "size": 100}
                     }
                 }
             }
