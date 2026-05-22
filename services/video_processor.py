@@ -227,6 +227,7 @@ def process_video_background(video_id: str, original_title: str = None, folder_p
         CHUNK_DURATION = 900
         total_parts = math.ceil(duration_sec / CHUNK_DURATION) if duration_sec > 0 else 1
         full_transcript = ""
+        chunk_summaries = []  # Collect summaries for roadmap generation
         prompt = get_transcription_prompt()
 
         for i in range(total_parts):
@@ -326,6 +327,27 @@ def process_video_background(video_id: str, original_title: str = None, folder_p
                 adjusted_transcript = adjust_timestamps(response.text, int(start_time))
                 full_transcript += adjusted_transcript + "\n\n"
                 
+                # Generate chunk summary for roadmap (Map step)
+                print(f"📝 Generating summary for chunk {i+1}...")
+                try:
+                    summary_prompt = """Summarize the following transcript segment into 3-4 bullet points focusing on core educational concepts. Include the start time.
+Transcript:""" + adjusted_transcript
+                    
+                    summary_response = client.models.generate_content(
+                        model="gemini-2.5-flash",
+                        contents=summary_prompt
+                    )
+                    
+                    chunk_summary = summary_response.text.strip()
+                    chunk_summaries.append(f"=== Chunk {i+1} (Time: {start_time//60}:{start_time%60:02d}) ===\n{chunk_summary}")
+                    print(f"✅ Summary generated for chunk {i+1}")
+                    
+                except Exception as summary_error:
+                    print(f"⚠️ Failed to generate summary for chunk {i+1}: {summary_error}")
+                    # Fallback: use first 500 chars of transcript as summary
+                    fallback_summary = adjusted_transcript[:500] + "..." if len(adjusted_transcript) > 500 else adjusted_transcript
+                    chunk_summaries.append(f"=== Chunk {i+1} (Time: {start_time//60}:{start_time%60:02d}) ===\n{fallback_summary}")
+                
                 # Cleanup Gemini file & Local chunk
                 client.files.delete(name=video_file_gemini.name)
                 if os.path.exists(chunk_file): os.remove(chunk_file)
@@ -353,20 +375,23 @@ def process_video_background(video_id: str, original_title: str = None, folder_p
             print(f"   Continuing processing without transcript...")
             full_transcript = ""  # Empty transcript, but continue processing
 
-        # 6. Generate Roadmap from Transcript (only if transcript exists)
+        # 6. Generate Roadmap from Chunk Summaries (Reduce step - only if transcript exists)
         roadmap_available = False
-        if transcript_available:
-            print("\n🗺️ Generating roadmap from transcript...")
+        if transcript_available and chunk_summaries:
+            print("\n🗺️ Generating roadmap from chunk summaries...")
+            print(f"   Total chunks summarized: {len(chunk_summaries)}")
             update_status("processing", "Generating lesson roadmap...", 75)
             
             try:
                 # Load roadmap generation prompt using the service function
                 roadmap_prompt_template = get_roadmap_prompt_template()
                 
-                # Prepare transcript summary for roadmap generation
-                # Take first 15000 characters to avoid token limits
-                transcript_summary = full_transcript[:15000] if len(full_transcript) > 15000 else full_transcript
-                roadmap_prompt = roadmap_prompt_template.replace("{merged_summaries}", transcript_summary)
+                # Merge all chunk summaries (Reduce step)
+                merged_summaries = "\n\n".join(chunk_summaries)
+                print(f"   Merged summaries length: {len(merged_summaries)} characters")
+                
+                # Replace placeholder with merged summaries
+                roadmap_prompt = roadmap_prompt_template.replace("{merged_summaries}", merged_summaries)
                 
                 # Generate roadmap using Gemini (same model as transcription)
                 roadmap_response = client.models.generate_content(
@@ -400,7 +425,10 @@ def process_video_background(video_id: str, original_title: str = None, folder_p
                 traceback.print_exc()
                 # Don't fail the entire process if roadmap generation fails
         else:
-            print("⚠️ Skipping roadmap generation (no transcript available)")
+            if not transcript_available:
+                print("⚠️ Skipping roadmap generation (no transcript available)")
+            elif not chunk_summaries:
+                print("⚠️ Skipping roadmap generation (no chunk summaries available)")
 
         # 7. Save Transcript & Index to OpenSearch (only if transcript exists)
         update_status("transcript_generated", "Finalizing processing...", 80)
