@@ -4,6 +4,7 @@ import subprocess
 import math
 import os
 import traceback
+import uuid
 from datetime import datetime
 from typing import Dict
 from google.genai import types
@@ -229,11 +230,16 @@ def process_video_background(video_id: str, original_title: str = None, folder_p
         full_transcript = ""
         chunk_summaries = []  # Collect summaries for roadmap generation
         prompt = get_transcription_prompt()
+        
+        # Generate unique session ID to prevent file conflicts in concurrent processing
+        session_id = str(uuid.uuid4())[:8]
+        print(f"🔑 Processing session ID: {session_id}")
 
         for i in range(total_parts):
             try:
                 start_time = i * CHUNK_DURATION
-                chunk_file = os.path.join(UPLOAD_DIR, f"{video_id}_part{i}.mp4")
+                # Use unique session ID in chunk filename to prevent conflicts
+                chunk_file = os.path.join(UPLOAD_DIR, f"{video_id}_{session_id}_part{i}.mp4")
                 update_status("processing", f"Transcribing part {i+1} of {total_parts}...", 30 + int((i/total_parts)*40))
                 
                 # FFmpeg Chunking
@@ -349,8 +355,18 @@ Transcript:""" + adjusted_transcript
                     chunk_summaries.append(f"=== Chunk {i+1} (Time: {start_time//60}:{start_time%60:02d}) ===\n{fallback_summary}")
                 
                 # Cleanup Gemini file & Local chunk
-                client.files.delete(name=video_file_gemini.name)
-                if os.path.exists(chunk_file): os.remove(chunk_file)
+                try:
+                    client.files.delete(name=video_file_gemini.name)
+                except Exception as delete_error:
+                    print(f"⚠️ Failed to delete Gemini file: {delete_error}")
+                
+                # Ensure chunk file is always deleted
+                if os.path.exists(chunk_file):
+                    try:
+                        os.remove(chunk_file)
+                        print(f"🗑️ Deleted chunk file: {chunk_file}")
+                    except Exception as file_error:
+                        print(f"⚠️ Failed to delete chunk file {chunk_file}: {file_error}")
                 
                 print(f"✅ Part {i+1} success.")
                 time.sleep(2) # Avoid rate limits
@@ -358,12 +374,15 @@ Transcript:""" + adjusted_transcript
             except Exception as chunk_e:
                 print(f"❌ Error in chunk {i}: {chunk_e}")
                 traceback.print_exc()
-                # Clean up chunk file if it exists
-                if os.path.exists(chunk_file):
+                
+                # Ensure cleanup even on error
+                if 'chunk_file' in locals() and os.path.exists(chunk_file):
                     try:
                         os.remove(chunk_file)
-                    except Exception:
-                        pass
+                        print(f"🗑️ Cleaned up chunk file after error: {chunk_file}")
+                    except Exception as cleanup_error:
+                        print(f"⚠️ Failed to cleanup chunk file: {cleanup_error}")
+                
                 continue
 
         # 5. Validate transcript (but continue even if empty)
@@ -495,8 +514,32 @@ Transcript:""" + adjusted_transcript
         print(f"🏁 [{video_id}] Final Status: COMPLETED")
         print(f"   Transcript: {'✅ Available' if transcript_available else '❌ Unavailable'}")
         print(f"   Roadmap: {'✅ Available' if roadmap_available else '❌ Unavailable'}")
+        
+        # Final cleanup: Remove any leftover chunk files for this session
+        if 'session_id' in locals():
+            cleanup_pattern = f"{video_id}_{session_id}_part"
+            for filename in os.listdir(UPLOAD_DIR):
+                if filename.startswith(cleanup_pattern):
+                    try:
+                        file_path = os.path.join(UPLOAD_DIR, filename)
+                        os.remove(file_path)
+                        print(f"🗑️ Final cleanup: Removed {filename}")
+                    except Exception as cleanup_error:
+                        print(f"⚠️ Failed to cleanup {filename}: {cleanup_error}")
 
     except Exception as e:
         print(f"\n❌ FATAL ERROR IN BACKGROUND TASK: {str(e)}")
         traceback.print_exc()
         update_status("error", f"Processing failed: {str(e)}", 0)
+        
+        # Cleanup on fatal error
+        if 'session_id' in locals() and 'video_id' in locals():
+            cleanup_pattern = f"{video_id}_{session_id}_part"
+            for filename in os.listdir(UPLOAD_DIR):
+                if filename.startswith(cleanup_pattern):
+                    try:
+                        file_path = os.path.join(UPLOAD_DIR, filename)
+                        os.remove(file_path)
+                        print(f"🗑️ Error cleanup: Removed {filename}")
+                    except Exception as cleanup_error:
+                        print(f"⚠️ Failed to cleanup {filename}: {cleanup_error}")

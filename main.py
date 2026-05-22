@@ -84,14 +84,36 @@ async def generate_upload_url(filename: str):
 @app.post("/api/process-video")
 async def process_video(request: ProcessVideoRequest, background_tasks: BackgroundTasks):
     try:
+        # CONCURRENCY LOCK: Check if video is already being processed
+        existing_status = get_from_redis(f"video_status:{request.video_id}")
+        
+        if existing_status:
+            current_status = existing_status.get("status", "")
+            
+            # If already processing, return immediately without launching new task
+            if current_status in ["starting", "uploading", "uploaded", "processing", "transcript_generated"]:
+                print(f"⚠️ Video {request.video_id} is already being processed (status: {current_status})")
+                return {
+                    "status": "already_processing",
+                    "video_id": request.video_id,
+                    "message": f"Video is already in the processing queue (current status: {current_status})",
+                    "current_status": existing_status
+                }
+        
+        # Set initial status with lock
         initial_status = {
-            "status": "starting", "message": "Starting processing...", "progress": 0,
+            "status": "starting", 
+            "message": "Starting processing...", 
+            "progress": 0,
             "timestamp": datetime.utcnow().isoformat()
         }
+        
         if not save_to_redis(f"video_status:{request.video_id}", initial_status, ttl_seconds=STATUS_CACHE_TTL):
             upload_statuses[request.video_id] = initial_status
         
+        print(f"✅ Launching background task for video: {request.video_id}")
         background_tasks.add_task(process_video_background, request.video_id, request.original_title)
+        
         return {"status": "processing", "video_id": request.video_id, "message": "Processing started"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
