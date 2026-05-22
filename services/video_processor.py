@@ -8,11 +8,11 @@ from datetime import datetime
 from typing import Dict
 from google.genai import types
 
-from config import FFMPEG_CMD, UPLOAD_DIR, STATUS_CACHE_TTL, AWS_REGION, BUCKET_NAME, OUTPUT_BUCKET_NAME
+from config import FFMPEG_CMD, UPLOAD_DIR, STATUS_CACHE_TTL, AWS_REGION, S3_REGION, BUCKET_NAME, OUTPUT_BUCKET_NAME
 from services.redis_service import save_to_redis, upload_statuses
 from services.opensearch_service import opensearch_client, INDEX_NAME
 from services.s3_service import s3_client, upload_text_to_s3
-from services.gemini_service import client, get_transcription_prompt
+from services.gemini_service import client, get_transcription_prompt, get_roadmap_prompt_template
 from utils.helpers import get_video_duration_seconds
 from utils.chunking import split_into_chunks
 from utils.timestamps import adjust_timestamps
@@ -46,7 +46,7 @@ def generate_and_upload_thumbnail(video_url, video_id, time_offset=5):
         try:
             s3_client.head_object(Bucket=OUTPUT_BUCKET_NAME, Key=thumbnail_s3_key)
             print(f"   ✅ Thumbnail already exists")
-            return f"https://{OUTPUT_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{thumbnail_s3_key}"
+            return f"https://{OUTPUT_BUCKET_NAME}.s3.{S3_REGION}.amazonaws.com/{thumbnail_s3_key}"
         except:
             pass
         
@@ -69,7 +69,7 @@ def generate_and_upload_thumbnail(video_url, video_id, time_offset=5):
             os.remove(temp_jpg)
         
         print(f"   ✅ Thumbnail uploaded: {thumbnail_s3_key}")
-        return f"https://{OUTPUT_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{thumbnail_s3_key}"
+        return f"https://{OUTPUT_BUCKET_NAME}.s3.{S3_REGION}.amazonaws.com/{thumbnail_s3_key}"
     except Exception as e:
         print(f"⚠️ Could not generate thumbnail: {e}")
         import traceback
@@ -207,7 +207,7 @@ def process_video_background(video_id: str, original_title: str = None, folder_p
             ExpiresIn=43200
         )
         print(f"🔍 Presigned URL: {video_url[:100]}...")
-        video_s3_url = f"https://{BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{s3_key}"
+        video_s3_url = f"https://{BUCKET_NAME}.s3.{S3_REGION}.amazonaws.com/{s3_key}"
         
         # 2. Extract Duration
         duration_sec = get_video_duration_seconds(video_url)
@@ -242,11 +242,80 @@ def process_video_background(video_id: str, original_title: str = None, folder_p
                     "-c", "copy", chunk_file
                 ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-                # Gemini Upload
-                video_file_gemini = client.files.upload(file=chunk_file)
+                # Verify chunk file was created and has content
+                if not os.path.exists(chunk_file):
+                    raise Exception(f"FFmpeg failed to create chunk file: {chunk_file}")
+                
+                chunk_size = os.path.getsize(chunk_file)
+                if chunk_size == 0:
+                    raise Exception(f"Chunk file is empty: {chunk_file}")
+                
+                print(f"📦 Chunk {i+1} created: {chunk_size / (1024*1024):.2f} MB")
+
+                # Gemini Upload with retry logic
+                max_retries = 3
+                retry_count = 0
+                video_file_gemini = None
+                last_error = None
+                
+                while retry_count <= max_retries:
+                    try:
+                        # Open file fresh for each attempt to avoid stale file handles
+                        print(f"📤 Uploading chunk {i+1} to Gemini (attempt {retry_count + 1}/{max_retries + 1})...")
+                        
+                        # For retries after "Upload has already been terminated", recreate the chunk
+                        if retry_count > 0 and last_error and "terminated" in str(last_error).lower():
+                            print(f"🔄 Recreating chunk file due to terminated upload session...")
+                            if os.path.exists(chunk_file):
+                                os.remove(chunk_file)
+                            
+                            # Recreate the chunk
+                            subprocess.run([
+                                FFMPEG_CMD, "-y", "-i", video_url,
+                                "-ss", str(start_time), "-t", str(CHUNK_DURATION),
+                                "-c", "copy", chunk_file
+                            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            
+                            # Add extra delay to let Gemini API reset
+                            time.sleep(10)
+                        
+                        video_file_gemini = client.files.upload(file=chunk_file)
+                        print(f"✅ Upload successful, file ID: {video_file_gemini.name}")
+                        break  # Success, exit retry loop
+                        
+                    except Exception as upload_error:
+                        last_error = upload_error
+                        retry_count += 1
+                        error_msg = str(upload_error)
+                        print(f"❌ Upload attempt {retry_count} failed: {error_msg}")
+                        
+                        if retry_count > max_retries:
+                            # Check if this is a quota/rate limit issue
+                            if "quota" in error_msg.lower() or "rate" in error_msg.lower():
+                                raise Exception(f"Gemini API quota/rate limit exceeded. Please try again later. Error: {upload_error}")
+                            raise Exception(f"Gemini upload failed after {max_retries} retries: {upload_error}")
+                        
+                        # Exponential backoff: 10s, 20s, 30s
+                        wait_time = retry_count * 10
+                        print(f"⏳ Waiting {wait_time} seconds before retry...")
+                        time.sleep(wait_time)
+                
+                if not video_file_gemini:
+                    raise Exception("Failed to upload video chunk to Gemini")
+                
+                # Wait for processing
+                print(f"⏳ Waiting for Gemini to process chunk {i+1}...")
+                processing_timeout = 300  # 5 minutes
+                processing_start = time.time()
+                
                 while video_file_gemini.state.name == "PROCESSING":
+                    if time.time() - processing_start > processing_timeout:
+                        raise Exception(f"Gemini processing timeout after {processing_timeout}s")
                     time.sleep(5)
                     video_file_gemini = client.files.get(name=video_file_gemini.name)
+                
+                if video_file_gemini.state.name != "ACTIVE":
+                    raise Exception(f"Gemini file processing failed with state: {video_file_gemini.state.name}")
 
                 # Model Generation (Gemini 2.5 Flash)
                 response = client.models.generate_content(
@@ -267,50 +336,137 @@ def process_video_background(video_id: str, original_title: str = None, folder_p
             except Exception as chunk_e:
                 print(f"❌ Error in chunk {i}: {chunk_e}")
                 traceback.print_exc()
+                # Clean up chunk file if it exists
+                if os.path.exists(chunk_file):
+                    try:
+                        os.remove(chunk_file)
+                    except Exception:
+                        pass
                 continue
 
-        # 5. Save Transcript & Index to OpenSearch
-        update_status("transcript_generated", "Indexing to OpenSearch...", 80)
+        # 5. Validate transcript (but continue even if empty)
+        transcript_available = bool(full_transcript and len(full_transcript.strip()) >= 50)
         
-        # Clean video_id for transcript filename (remove extensions and slashes)
-        clean_video_id = video_id.replace('.mp4', '').replace('.mov', '').replace('.avi', '').strip('/')
-        transcript_s3_url = upload_text_to_s3(full_transcript, f"transcripts/{clean_video_id}.txt")
-        
-        text_chunks = split_into_chunks(full_transcript)
-        for chunk in text_chunks:
-            if not chunk.strip(): continue
-            try:
-                result = client.models.embed_content(
-                    model="gemini-embedding-001", 
-                    contents=f"Video: {original_title}\nContent: {chunk}",
-                    config=types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT", output_dimensionality=768)
-                )
-                opensearch_client.index(index=INDEX_NAME, body={
-                    "video_id": video_id, 
-                    "text_chunk": chunk,
-                    "timestamp": chunk[1:14] if chunk.startswith("[") else "00:00",
-                    "video_s3_url": video_s3_url, 
-                    "transcript_s3_url": transcript_s3_url,
-                    "duration": formatted_duration, 
-                    "embedding": result.embeddings[0].values,
-                    "original_title": original_title,
-                    "thumbnail_url": thumbnail_url
-                })
-            except Exception as e:
-                print(f"⚠️ Indexing error: {e}")
+        if not transcript_available:
+            print(f"⚠️ Transcription failed or produced minimal output")
+            print(f"   Transcript length: {len(full_transcript.strip()) if full_transcript else 0} characters")
+            print(f"   Continuing processing without transcript...")
+            full_transcript = ""  # Empty transcript, but continue processing
 
-        # 6. Complete
+        # 6. Generate Roadmap from Transcript (only if transcript exists)
+        roadmap_available = False
+        if transcript_available:
+            print("\n🗺️ Generating roadmap from transcript...")
+            update_status("processing", "Generating lesson roadmap...", 75)
+            
+            try:
+                # Load roadmap generation prompt using the service function
+                roadmap_prompt_template = get_roadmap_prompt_template()
+                
+                # Prepare transcript summary for roadmap generation
+                # Take first 15000 characters to avoid token limits
+                transcript_summary = full_transcript[:15000] if len(full_transcript) > 15000 else full_transcript
+                roadmap_prompt = roadmap_prompt_template.replace("{merged_summaries}", transcript_summary)
+                
+                # Generate roadmap using Gemini (same model as transcription)
+                roadmap_response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=roadmap_prompt
+                )
+                
+                roadmap_json_text = roadmap_response.text.strip()
+                
+                # Clean up markdown code blocks if present
+                if roadmap_json_text.startswith("```json"):
+                    roadmap_json_text = roadmap_json_text.replace("```json", "").replace("```", "").strip()
+                elif roadmap_json_text.startswith("```"):
+                    roadmap_json_text = roadmap_json_text.replace("```", "").strip()
+                
+                # Validate JSON
+                import json
+                roadmap_data = json.loads(roadmap_json_text)
+                
+                # Append roadmap to transcript
+                full_transcript += "\n\n=== VIDEO ROADMAP ===\n"
+                full_transcript += json.dumps(roadmap_data, ensure_ascii=False, indent=2)
+                
+                roadmap_available = True
+                print(f"✅ Roadmap generated successfully with {len(roadmap_data)} chapters")
+                
+            except Exception as roadmap_error:
+                print(f"⚠️ Roadmap generation failed: {roadmap_error}")
+                print("   Continuing without roadmap...")
+                import traceback
+                traceback.print_exc()
+                # Don't fail the entire process if roadmap generation fails
+        else:
+            print("⚠️ Skipping roadmap generation (no transcript available)")
+
+        # 7. Save Transcript & Index to OpenSearch (only if transcript exists)
+        update_status("transcript_generated", "Finalizing processing...", 80)
+        
+        transcript_s3_url = None
+        if transcript_available:
+            # Clean video_id for transcript filename (remove extensions and slashes)
+            clean_video_id = video_id.replace('.mp4', '').replace('.mov', '').replace('.avi', '').strip('/')
+            transcript_s3_url = upload_text_to_s3(full_transcript, f"transcripts/{clean_video_id}.txt")
+            
+            # Index to OpenSearch
+            text_chunks = split_into_chunks(full_transcript)
+            indexed_chunks = 0
+            for chunk in text_chunks:
+                if not chunk.strip(): continue
+                try:
+                    result = client.models.embed_content(
+                        model="gemini-embedding-001", 
+                        contents=f"Video: {original_title}\nContent: {chunk}",
+                        config=types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT", output_dimensionality=768)
+                    )
+                    opensearch_client.index(index=INDEX_NAME, body={
+                        "video_id": video_id, 
+                        "text_chunk": chunk,
+                        "timestamp": chunk[1:14] if chunk.startswith("[") else "00:00",
+                        "video_s3_url": video_s3_url, 
+                        "transcript_s3_url": transcript_s3_url,
+                        "duration": formatted_duration, 
+                        "embedding": result.embeddings[0].values,
+                        "original_title": original_title,
+                        "thumbnail_url": thumbnail_url
+                    })
+                    indexed_chunks += 1
+                except Exception as e:
+                    print(f"⚠️ Indexing error: {e}")
+            
+            print(f"✅ Indexed {indexed_chunks} chunks to OpenSearch")
+        else:
+            print("⚠️ No transcript to save or index")
+
+        # 8. Complete (ALWAYS reach here, even if transcript/roadmap failed)
+        completion_message = "Processing complete!"
+        if not transcript_available:
+            completion_message = "Processing complete (transcript unavailable)"
+        elif not roadmap_available:
+            completion_message = "Processing complete (roadmap unavailable)"
+        
         completed_data = {
             "status": "completed",
-            "message": "Processing complete!",
+            "message": completion_message,
             "progress": 100,
             "timestamp": datetime.utcnow().isoformat(),
             "data": {
-                "video_s3_url": video_s3_url, "duration": formatted_duration, "thumbnail_url": thumbnail_url
+                "video_s3_url": video_s3_url,
+                "duration": formatted_duration,
+                "thumbnail_url": thumbnail_url,
+                "transcript_s3_url": transcript_s3_url,
+                "transcript_status": "available" if transcript_available else "unavailable",
+                "has_transcript": transcript_available,
+                "has_roadmap": roadmap_available
             }
         }
         save_to_redis(f"video_status:{video_id}", completed_data, ttl_seconds=STATUS_CACHE_TTL)
         print(f"🏁 [{video_id}] Final Status: COMPLETED")
+        print(f"   Transcript: {'✅ Available' if transcript_available else '❌ Unavailable'}")
+        print(f"   Roadmap: {'✅ Available' if roadmap_available else '❌ Unavailable'}")
 
     except Exception as e:
         print(f"\n❌ FATAL ERROR IN BACKGROUND TASK: {str(e)}")

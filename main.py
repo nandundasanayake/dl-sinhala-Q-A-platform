@@ -15,22 +15,10 @@ from config import UPLOAD_DIR, BUCKET_NAME, AWS_REGION, REDIS_DB, STATUS_CACHE_T
 from services.redis_service import init_redis, save_to_redis, get_from_redis, redis_client, upload_statuses, chat_response_cache
 from services.opensearch_service import init_opensearch, setup_opensearch_index, get_opensearch_client, opensearch_client, INDEX_NAME
 from services.s3_service import s3_client
-from services.gemini_service import client as gemini_client, get_chat_system_prompt, get_rewrite_prompt_template
+from services.gemini_service import client as gemini_client, get_chat_system_prompt, get_rewrite_prompt_template, get_roadmap_prompt_template
 from services.video_processor import process_video_background, generate_and_upload_thumbnail
+from prompts.Roadmap_prompt import ROADMAP_KEYWORDS, ROADMAP_HEADER, ROADMAP_CHAPTER_BULLET, ROADMAP_SUBTOPIC_BULLET, ROADMAP_VERTICAL_CONNECTOR, ROADMAP_CLOSING_MESSAGE, ROADMAP_NOT_FOUND_MESSAGE
 from models.schemas import ChatMessage, ChatRequest, ProcessVideoRequest
-
-def build_s3_key(folder_path: str, filename: str) -> str:
-    """Safely constructs S3 key by stripping leading/trailing slashes from folder_path."""
-    if not folder_path or folder_path.strip() == "":
-        return filename
-    # Strip leading and trailing slashes from folder_path
-    clean_folder = folder_path.strip().strip('/')
-    return f"{clean_folder}/{filename}" if clean_folder else filename
-
-def build_video_s3_key(folder_path: str, filename: str) -> str:
-    """Constructs S3 key for videos with raw/ prefix."""
-    base_key = build_s3_key(folder_path, filename)
-    return f"raw/{base_key}"
 
 # Initialize services
 init_redis()
@@ -75,7 +63,7 @@ async def get_upload_status(video_id: str):
     return upload_statuses[video_id]
 
 @app.get("/api/generate-upload-url")
-async def generate_upload_url(filename: str, folder_path: str = ""):
+async def generate_upload_url(filename: str):
     # Keep original filename for display purposes
     original_filename = filename
 
@@ -83,16 +71,13 @@ async def generate_upload_url(filename: str, folder_path: str = ""):
     unique_id = str(uuid.uuid4())[:8]
     video_id = f"{unique_id}---{safe_filename}"
     
-    # Videos are stored in raw/ folder
-    s3_key = build_video_s3_key(folder_path, video_id)
-    
     try:
         presigned_url = s3_client.generate_presigned_url(
             'put_object',
-            Params={'Bucket': BUCKET_NAME, 'Key': s3_key},
+            Params={'Bucket': BUCKET_NAME, 'Key': f"videos/{video_id}"},
             ExpiresIn=21600
         )
-        return {"upload_url": presigned_url, "video_id": video_id, "s3_key": s3_key, "original_filename": original_filename}
+        return {"upload_url": presigned_url, "video_id": video_id, "original_filename": original_filename}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -106,8 +91,7 @@ async def process_video(request: ProcessVideoRequest, background_tasks: Backgrou
         if not save_to_redis(f"video_status:{request.video_id}", initial_status, ttl_seconds=STATUS_CACHE_TTL):
             upload_statuses[request.video_id] = initial_status
         
-        folder_path = getattr(request, 'folder_path', '')
-        background_tasks.add_task(process_video_background, request.video_id, request.original_title, folder_path)
+        background_tasks.add_task(process_video_background, request.video_id, request.original_title)
         return {"status": "processing", "video_id": request.video_id, "message": "Processing started"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -121,6 +105,82 @@ async def ask_question(request: ChatRequest):
     print(f"❓ Question: {request.question}")
     print(f"📜 Chat History Length: {len(request.chat_history)} messages")
     try:
+        # ROADMAP INTERCEPTION
+        question_lower = request.question.lower()
+        
+        if any(keyword in question_lower for keyword in ROADMAP_KEYWORDS):
+            print("\n🗺️ ROADMAP REQUEST DETECTED - Checking transcript...")
+            
+            # Fetch transcript from S3
+            transcript_key = f"transcripts/{request.video_id}.txt"
+            try:
+                transcript_obj = s3_client.get_object(Bucket=BUCKET_NAME, Key=transcript_key)
+                transcript_text = transcript_obj['Body'].read().decode('utf-8')
+                
+                # Check if roadmap exists in transcript
+                if "=== VIDEO ROADMAP ===" in transcript_text:
+                    print("✅ Roadmap found in transcript - Serving directly")
+                    roadmap_section = transcript_text.split("=== VIDEO ROADMAP ===")[1].strip()
+                    
+                    try:
+                        import json
+                        roadmap_json = json.loads(roadmap_section)
+                        
+                        # Handle wrapping: extract list from dict or use directly
+                        if isinstance(roadmap_json, dict):
+                            roadmap_list = roadmap_json.get("roadmap") or roadmap_json.get("chapters") or []
+                        elif isinstance(roadmap_json, list):
+                            roadmap_list = roadmap_json
+                        else:
+                            roadmap_list = []
+                        
+                        # Build vertical timeline roadmap
+                        formatted_text = f"{ROADMAP_HEADER}\n\n"
+                        
+                        for idx, item in enumerate(roadmap_list, 1):
+                            chapter_title = (
+                                item.get("chapter_title") or 
+                                item.get("title") or 
+                                item.get("topic") or 
+                                item.get("chapter") or 
+                                f"Chapter {idx}"
+                            )
+                            
+                            formatted_text += f"{ROADMAP_CHAPTER_BULLET} **{idx:02d}. {chapter_title}**\n"
+                            
+                            sub_topics = item.get("sub_topics", []) or item.get("subtopics", [])
+                            if isinstance(sub_topics, list):
+                                for sub in sub_topics:
+                                    if isinstance(sub, str):
+                                        sub_title = sub
+                                    elif isinstance(sub, dict):
+                                        sub_title = sub.get("title") or sub.get("topic") or sub.get("name") or ""
+                                    else:
+                                        continue
+                                    
+                                    if sub_title:
+                                        formatted_text += f"{ROADMAP_SUBTOPIC_BULLET} {sub_title}\n"
+                            
+                            if idx < len(roadmap_list):
+                                formatted_text += f"{ROADMAP_VERTICAL_CONNECTOR}\n"
+                        
+                        formatted_text += ROADMAP_CLOSING_MESSAGE
+                        
+                        async def roadmap_stream():
+                            yield formatted_text
+                        
+                        return StreamingResponse(roadmap_stream(), media_type='text/plain')
+                    except Exception as parse_e:
+                        print(f"⚠️ Roadmap parsing failed: {parse_e}")
+                else:
+                    print("❌ Roadmap not found in transcript")
+            except Exception as e:
+                print(f"⚠️ Could not fetch transcript: {e}")
+            
+            async def no_roadmap_stream():
+                yield ROADMAP_NOT_FOUND_MESSAGE
+            return StreamingResponse(no_roadmap_stream(), media_type='text/plain')
+        
         print("\n📍 STEP 1: Checking Cache")
         history_str = "".join([m.content for m in request.chat_history[-2:]])
         raw_key = f"{request.video_id}_{request.question}_{history_str}"
@@ -263,25 +323,24 @@ def health():
 @app.get("/api/videos")
 async def list_videos():
     try:
-        # Videos are stored in raw/ folder
-        response = s3_client.list_objects_v2(Bucket=BUCKET_NAME, Prefix="raw/")
+        response = s3_client.list_objects_v2(Bucket=BUCKET_NAME, Prefix="videos/")
         videos = []
 
-        # First, try to get titles from OpenSearch
+        # Get titles and durations from OpenSearch
         title_map = {}
+        duration_map = {}
         if opensearch_client:
             try:
-                # Get all unique video_ids with their titles from OpenSearch
                 search = {
                     "size": 0,
                     "aggs": {
                         "videos": {
                             "terms": {"field": "video_id", "size": 100},
                             "aggs": {
-                                "latest_title": {
+                                "latest_data": {
                                     "top_hits": {
                                         "size": 1,
-                                        "_source": ["original_title"]
+                                        "_source": ["original_title", "duration"]
                                     }
                                 }
                             }
@@ -290,16 +349,17 @@ async def list_videos():
                 }
                 result = opensearch_client.search(index=INDEX_NAME, body=search)
                 for bucket in result['aggregations']['videos']['buckets']:
-                    if bucket.get('latest_title', {}).get('hits', {}).get('hits'):
-                        title_map[bucket['key']] = bucket['latest_title']['hits']['hits'][0]['_source'].get('original_title', '')
+                    if bucket.get('latest_data', {}).get('hits', {}).get('hits'):
+                        source = bucket['latest_data']['hits']['hits'][0]['_source']
+                        title_map[bucket['key']] = source.get('original_title', '')
+                        duration_map[bucket['key']] = source.get('duration', '0:00')
             except Exception as e:
-                print(f"Warning: Could not fetch titles from OpenSearch: {e}")
+                print(f"Warning: Could not fetch data from OpenSearch: {e}")
 
         if 'Contents' in response:
             for obj in response['Contents']:
                 video_key = obj['Key']
-                # Remove raw/ prefix and get filename
-                video_filename = video_key.replace('raw/', '').split('/')[-1]
+                video_filename = video_key.replace('videos/', '')
                 
                 video_url = f"https://{BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{video_key}"
                 
@@ -313,16 +373,9 @@ async def list_videos():
                 thumbnail_s3_key = f"thumbnails/{video_filename}.jpg"
                 thumbnail_url = f"https://{BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{thumbnail_s3_key}"
                 
-                duration = "0:00"
-                try:
-                    search_query = {"size": 1, "query": {"term": {"video_id": video_filename}}, "_source": ["duration"]}
-                    res = opensearch_client.search(index=INDEX_NAME, body=search_query)
-                    if res['hits']['hits']:
-                        duration = res['hits']['hits'][0]['_source'].get('duration', '0:00')
-                except: pass
-                
-                # Get title from OpenSearch first
+                # Get title and duration from OpenSearch
                 title = title_map.get(video_filename)
+                duration = duration_map.get(video_filename, '0:00')
                 
                 # Fallback to extracting from filename if no title in OpenSearch
                 if not title:
@@ -346,11 +399,10 @@ async def list_videos():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/videos/{video_id}")
-async def get_video(video_id: str, folder_path: str = ""):
+async def get_video(video_id: str):
     try:
         video_id = urllib.parse.unquote(video_id)
-        # Videos are stored in raw/ folder
-        video_key = build_video_s3_key(folder_path, video_id)
+        video_key = f"videos/{video_id}"
         video_url = f"https://{BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{video_key}"
         
         try:
@@ -382,13 +434,11 @@ async def get_video(video_id: str, folder_path: str = ""):
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/videos/{video_id}")
-async def delete_video(video_id: str, folder_path: str = ""):
+async def delete_video(video_id: str):
     try:
         video_id = urllib.parse.unquote(video_id)
         
-        # Videos are stored in raw/ folder
-        video_key = build_video_s3_key(folder_path, video_id)
-        s3_client.delete_object(Bucket=BUCKET_NAME, Key=video_key)
+        s3_client.delete_object(Bucket=BUCKET_NAME, Key=f"videos/{video_id}")
         s3_client.delete_object(Bucket=BUCKET_NAME, Key=f"thumbnails/{video_id}.jpg")
         try: 
             s3_client.delete_object(Bucket=BUCKET_NAME, Key=f"transcripts/{video_id}.txt")
@@ -400,6 +450,80 @@ async def delete_video(video_id: str, folder_path: str = ""):
         
         return {"status": "success", "message": "Video deleted"}
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/videos/{video_id}/regenerate-roadmap")
+async def regenerate_roadmap(video_id: str):
+    """Regenerate roadmap for an existing video that has a transcript"""
+    try:
+        video_id = urllib.parse.unquote(video_id)
+        
+        # Fetch existing transcript from S3
+        transcript_key = f"transcripts/{video_id}.txt"
+        try:
+            transcript_obj = s3_client.get_object(Bucket=BUCKET_NAME, Key=transcript_key)
+            transcript_text = transcript_obj['Body'].read().decode('utf-8')
+        except Exception as e:
+            raise HTTPException(status_code=404, detail=f"Transcript not found for video: {video_id}")
+        
+        # Check if roadmap already exists
+        if "=== VIDEO ROADMAP ===" in transcript_text:
+            # Remove existing roadmap
+            transcript_text = transcript_text.split("=== VIDEO ROADMAP ===")[0].strip()
+        
+        print(f"\n🗺️ Regenerating roadmap for video: {video_id}")
+        
+        # Load roadmap generation prompt using the service function
+        roadmap_prompt_template = get_roadmap_prompt_template()
+        
+        # Prepare transcript summary (first 15000 chars to avoid token limits)
+        transcript_summary = transcript_text[:15000] if len(transcript_text) > 15000 else transcript_text
+        roadmap_prompt = roadmap_prompt_template.replace("{merged_summaries}", transcript_summary)
+        
+        # Generate roadmap using Gemini (same model as transcription)
+        roadmap_response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=roadmap_prompt
+        )
+        
+        roadmap_json_text = roadmap_response.text.strip()
+        
+        # Clean up markdown code blocks if present
+        if roadmap_json_text.startswith("```json"):
+            roadmap_json_text = roadmap_json_text.replace("```json", "").replace("```", "").strip()
+        elif roadmap_json_text.startswith("```"):
+            roadmap_json_text = roadmap_json_text.replace("```", "").strip()
+        
+        # Validate JSON
+        import json
+        roadmap_data = json.loads(roadmap_json_text)
+        
+        # Append roadmap to transcript
+        updated_transcript = transcript_text + "\n\n=== VIDEO ROADMAP ===\n"
+        updated_transcript += json.dumps(roadmap_data, ensure_ascii=False, indent=2)
+        
+        # Upload updated transcript back to S3
+        s3_client.put_object(
+            Bucket=BUCKET_NAME,
+            Key=transcript_key,
+            Body=updated_transcript.encode('utf-8'),
+            ContentType='text/plain; charset=utf-8'
+        )
+        
+        print(f"✅ Roadmap regenerated successfully with {len(roadmap_data)} chapters")
+        
+        return {
+            "status": "success",
+            "message": f"Roadmap regenerated successfully with {len(roadmap_data)} chapters",
+            "roadmap": roadmap_data
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Roadmap regeneration failed: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Roadmap regeneration failed: {str(e)}")
 
 @app.get("/api/thumbnail/{video_id:path}")
 async def get_thumbnail(video_id: str):

@@ -218,110 +218,44 @@ class ChatRequest(BaseModel):
 
 # --- API Endpoints ---
 
+# ============================================================================
+# DEPRECATED ENDPOINT - DO NOT USE
+# ============================================================================
+# This endpoint has been replaced by the unified video processing pipeline
+# in video_processor.py which is more efficient and cost-effective.
+# 
+# Use instead:
+#   1. Upload video to S3 directly (via presigned URL from /api/generate-upload-url)
+#   2. Call /api/process-video to trigger background processing
+#
+# This endpoint is kept for backward compatibility but will be removed in future.
+# ============================================================================
+
 @app.post("/api/upload-video")
-async def upload_and_process_video(file: UploadFile = File(...)):
-    """Handles video upload, S3 storage (video & transcript), Gemini processing, and OpenSearch indexing."""
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
-    thumbnail_path = os.path.join(UPLOAD_DIR, f"thumb_{file.filename}.jpg")
+async def upload_and_process_video_DEPRECATED(file: UploadFile = File(...)):
+    """
+    DEPRECATED: This endpoint is no longer recommended.
     
-    try:
-        # Save file locally for processing
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-
-         # Get video duration using MoviePy
-        duration = get_video_duration(file_path)
-        print(f"📹 Video duration: {duration}")
-
-        # Generate thumbnail using MoviePy
-        # save locally
-        thumbnail_url = generate_thumbnail(file_path, file.filename)
-        print(f"🖼️ Thumbnail available at: {thumbnail_url}")
-
-        # save to s3
-        # thumbnail_generated = generate_thumbnail(file_path, thumbnail_path)
-        # thumbnail_url = None
-
-        # if thumbnail_generated:
-        #     # Upload thumbnail to S3
-        #     thumbnail_s3_key = f"thumbnails/{file.filename}.jpg"
-        #     thumbnail_url = upload_file_to_s3(thumbnail_path, thumbnail_s3_key)
-        #     print(f"🖼️ Thumbnail uploaded: {thumbnail_url}")
-
-        # Step 1: Upload Video to AWS S3 'videos' folder
-        video_s3_key = f"videos/{file.filename}"
-        video_s3_url = upload_file_to_s3(file_path, video_s3_key)
-        if not video_s3_url:
-            raise HTTPException(status_code=500, detail="Video cloud storage upload failed.")
-
-        # Step 2: Processing with Gemini 2.5 Flash to get Transcript
-        video_file = client.files.upload(file=file_path)
-        while video_file.state.name == "PROCESSING":
-            time.sleep(5)
-            video_file = client.files.get(name=video_file.name)
-
-        prompt = "Provide a full transcript with timestamps in the exact ORIGINAL language spoken in the video. Do not translate. Format: [MM:SS - MM:SS] Text."
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[video_file, prompt]
-        )
-        transcript_text = response.text
-
-        # Step 3: Upload Transcript to AWS S3 'transcripts' folder
-        transcript_s3_key = f"transcripts/{file.filename}.txt"
-        transcript_s3_url = upload_text_to_s3(transcript_text, transcript_s3_key)
-
-        # Step 4: Chunking and Embedding using correct model and dimensions
-        chunks = split_into_chunks(transcript_text)
-        for chunk in chunks:
-            if not chunk.strip(): continue
-            
-            try:
-                result = client.models.embed_content(
-                    model="gemini-embedding-001", 
-                    contents=chunk,
-                    config=types.EmbedContentConfig(
-                        task_type="RETRIEVAL_DOCUMENT",
-                        output_dimensionality=768
-                    )
-                )
-                
-                vector = result.embeddings[0].values
-                if not vector:
-                    continue
-
-                # Step 5: Save embedded chunks to AWS OpenSearch
-                doc = {
-                    "video_id": file.filename,
-                    "text_chunk": chunk,
-                    "timestamp": chunk[1:14] if chunk.startswith("[") else "00:00",
-                    "video_s3_url": video_s3_url,
-                    "transcript_s3_url": transcript_s3_url,
-                    "embedding": vector
-                }
-                
-                opensearch_client.index(index=INDEX_NAME, body=doc)
-                time.sleep(0.5)
-                print(f"✅ Chunk indexed successfully!")
-                
-            except Exception as e:
-                print(f"⚠️ Chunk processing error: {e}")
-                time.sleep(2)
-
-        os.remove(file_path)
-        return {
-            "status": "success", 
-            "video_id": file.filename, 
-            "video_s3_url": video_s3_url,
-            "transcript_s3_url": transcript_s3_url,
-            "thumbnail_url": thumbnail_url,
-            "duration": duration  # This will show on video cards
+    Use the new unified pipeline instead:
+    1. GET /api/generate-upload-url to get presigned S3 URL
+    2. Upload directly to S3 using the presigned URL
+    3. POST /api/process-video to trigger processing
+    
+    This approach is more efficient and avoids redundant uploads.
+    """
+    raise HTTPException(
+        status_code=410,  # 410 Gone - indicates deprecated endpoint
+        detail={
+            "error": "This endpoint is deprecated",
+            "message": "Please use the new unified video processing pipeline",
+            "migration_guide": {
+                "step_1": "GET /api/generate-upload-url?filename=your_video.mp4",
+                "step_2": "Upload video directly to S3 using the presigned URL",
+                "step_3": "POST /api/process-video with video_id and original_title"
+            },
+            "reason": "The new pipeline is more efficient and avoids redundant S3 uploads"
         }
-
-    except Exception as e:
-        if os.path.exists(file_path): os.remove(file_path)
-        # if os.path.exists(thumbnail_path): os.remove(thumbnail_path)
-        raise HTTPException(status_code=500, detail=str(e))
+    )
 
 @app.post("/api/chat")
 async def ask_question(request: ChatRequest):

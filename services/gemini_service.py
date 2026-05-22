@@ -22,3 +22,7 @@ def get_chat_system_prompt():
 def get_rewrite_prompt_template():
     with open(os.path.join(_PROMPTS_DIR, 'rewrite_prompt.txt'), 'r', encoding='utf-8') as f:
         return f.read()
+
+def get_roadmap_prompt_template():
+    with open(os.path.join(_PROMPTS_DIR, 'Roadmap_prompt.txt'), 'r', encoding='utf-8') as f:
+        return f.read()
