@@ -11,7 +11,7 @@ from google.genai import types
 from datetime import datetime
 import urllib.parse
 
-from config import UPLOAD_DIR, BUCKET_NAME, AWS_REGION, REDIS_DB, STATUS_CACHE_TTL, CHAT_CACHE_TTL, OPENSEARCH_HOST, OPENSEARCH_PORT
+from config import UPLOAD_DIR, BUCKET_NAME, OUTPUT_BUCKET_NAME, AWS_REGION, REDIS_DB, STATUS_CACHE_TTL, CHAT_CACHE_TTL, OPENSEARCH_HOST, OPENSEARCH_PORT
 from services.redis_service import init_redis, save_to_redis, get_from_redis, redis_client, upload_statuses, chat_response_cache
 from services.opensearch_service import init_opensearch, setup_opensearch_index, get_opensearch_client, opensearch_client, INDEX_NAME
 from services.s3_service import s3_client
@@ -51,7 +51,17 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    return {"status": "healthy"}
+    return {
+        "message": "Enterprise Video RAG API v3.0",
+        "status": "running",
+        "endpoints": {
+            "health": "/health",
+            "videos": "/api/videos",
+            "process": "/api/process-video",
+            "chat": "/api/chat",
+            "upload_status": "/api/upload-status/{video_id}"
+        }
+    }
 
 @app.get("/api/upload-status/{video_id}")
 async def get_upload_status(video_id: str):
@@ -84,6 +94,14 @@ async def generate_upload_url(filename: str):
 @app.post("/api/process-video")
 async def process_video(request: ProcessVideoRequest, background_tasks: BackgroundTasks):
     try:
+        print(f"\n{'='*70}")
+        print(f"📤 VIDEO PROCESSING REQUEST RECEIVED")
+        print(f"{'='*70}")
+        print(f"   Video ID: {request.video_id}")
+        print(f"   Original Title: {request.original_title}")
+        print(f"   Folder Path: {request.folder_path}")
+        print(f"{'='*70}\n")
+        
         # CONCURRENCY LOCK: Check if video is already being processed
         existing_status = get_from_redis(f"video_status:{request.video_id}")
         
@@ -112,10 +130,18 @@ async def process_video(request: ProcessVideoRequest, background_tasks: Backgrou
             upload_statuses[request.video_id] = initial_status
         
         print(f"✅ Launching background task for video: {request.video_id}")
-        background_tasks.add_task(process_video_background, request.video_id, request.original_title)
+        background_tasks.add_task(
+            process_video_background, 
+            request.video_id, 
+            request.original_title,
+            request.folder_path or ""
+        )
         
         return {"status": "processing", "video_id": request.video_id, "message": "Processing started"}
     except Exception as e:
+        print(f"\n❌ ERROR IN PROCESS_VIDEO ENDPOINT: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/chat")
@@ -134,10 +160,48 @@ async def ask_question(request: ChatRequest):
             print("\n🗺️ ROADMAP REQUEST DETECTED - Checking transcript...")
             
             # Fetch transcript from S3
-            transcript_key = f"transcripts/{request.video_id}.txt"
+            # Clean video_id to match the format used when saving (remove extensions and slashes)
+            clean_video_id = request.video_id.replace('.mp4', '').replace('.mov', '').replace('.avi', '').strip('/')
+            
+            # Try multiple variations of the video_id to handle space/underscore conversions
+            video_id_variations = [
+                clean_video_id,
+                clean_video_id.replace('_', ' '),
+                clean_video_id.replace(' ', '_'),
+            ]
+            
+            # Remove duplicates while preserving order
+            video_id_variations = list(dict.fromkeys(video_id_variations))
+            
+            print(f"   Video ID (raw): {request.video_id}")
+            print(f"   Video ID (clean): {clean_video_id}")
+            print(f"   Trying variations: {video_id_variations}")
+            print(f"   Bucket: {OUTPUT_BUCKET_NAME}")
+            
+            transcript_text = None
+            successful_key = None
+            
+            # Try each variation until we find the transcript
+            for vid_variation in video_id_variations:
+                transcript_key = f"transcripts/{vid_variation}.txt"
+                try:
+                    print(f"   Attempting: {transcript_key}")
+                    transcript_obj = s3_client.get_object(Bucket=OUTPUT_BUCKET_NAME, Key=transcript_key)
+                    transcript_text = transcript_obj['Body'].read().decode('utf-8')
+                    successful_key = transcript_key
+                    print(f"   ✅ Found transcript at: {transcript_key}")
+                    break
+                except Exception as e:
+                    print(f"   ❌ Not found: {transcript_key}")
+                    continue
+            
+            if not transcript_text:
+                print(f"⚠️ Could not fetch transcript after trying all variations")
+                async def no_roadmap_stream():
+                    yield ROADMAP_NOT_FOUND_MESSAGE
+                return StreamingResponse(no_roadmap_stream(), media_type='text/plain')
+            
             try:
-                transcript_obj = s3_client.get_object(Bucket=BUCKET_NAME, Key=transcript_key)
-                transcript_text = transcript_obj['Body'].read().decode('utf-8')
                 
                 # Check if roadmap exists in transcript
                 if "=== VIDEO ROADMAP ===" in transcript_text:
@@ -197,8 +261,9 @@ async def ask_question(request: ChatRequest):
                 else:
                     print("❌ Roadmap not found in transcript")
             except Exception as e:
-                print(f"⚠️ Could not fetch transcript: {e}")
+                print(f"⚠️ Error processing transcript: {e}")
             
+            # If we reach here, roadmap was not found or parsing failed
             async def no_roadmap_stream():
                 yield ROADMAP_NOT_FOUND_MESSAGE
             return StreamingResponse(no_roadmap_stream(), media_type='text/plain')
@@ -241,11 +306,25 @@ async def ask_question(request: ChatRequest):
         vector = result.embeddings[0].values
         print(f"   ✅ Embedding generated (dimensions: {len(vector)})")
         
+        # Handle space/underscore variations in video_id for OpenSearch filtering
+        video_id_for_search = request.video_id.replace('_', ' ')  # Convert underscores to spaces
+        print(f"   Video ID for search: '{request.video_id}' -> '{video_id_for_search}'")
+        
         search_query = {
             "size": 10,
             "query": {
                 "bool": {
-                    "filter": [{"term": {"video_id": request.video_id}}],
+                    "filter": [
+                        {
+                            "bool": {
+                                "should": [
+                                    {"term": {"video_id": request.video_id}},  # Try original
+                                    {"term": {"video_id": video_id_for_search}}  # Try with spaces
+                                ],
+                                "minimum_should_match": 1
+                            }
+                        }
+                    ],
                     "should": [
                         {"knn": {"embedding": {"vector": vector, "k": 10}}},
                         {"match": {"text_chunk": {"query": search_query_text, "boost": 2.0}}}
@@ -395,9 +474,9 @@ async def list_videos():
                 thumbnail_s3_key = f"thumbnails/{video_filename}.jpg"
                 thumbnail_url = f"https://{BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{thumbnail_s3_key}"
                 
-                # Get title and duration from OpenSearch
-                title = title_map.get(video_filename)
-                duration = duration_map.get(video_filename, '0:00')
+                # Get title and duration from OpenSearch (try both space and underscore variations)
+                title = title_map.get(video_filename) or title_map.get(video_filename.replace('_', ' ')) or title_map.get(video_filename.replace(' ', '_'))
+                duration = duration_map.get(video_filename) or duration_map.get(video_filename.replace('_', ' ')) or duration_map.get(video_filename.replace(' ', '_')) or '0:00'
                 
                 # Fallback to extracting from filename if no title in OpenSearch
                 if not title:
