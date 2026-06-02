@@ -27,7 +27,7 @@ AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")  # Used for OpenSearch
 S3_REGION = os.getenv("S3_REGION", "eu-north-1")  # Dedicated region for S3 buckets
 BUCKET_NAME = os.getenv("S3_BUCKET_NAME")  # Input bucket for videos
-OUTPUT_BUCKET_NAME = os.getenv("S3_OUTPUT_BUCKET_NAME", os.getenv("S3_BUCKET_NAME"))  # Output bucket for transcripts/thumbnails
+OUTPUT_BUCKET_NAME = os.getenv("S3_OUTPUT_BUCKET_NAME") # Output bucket for transcripts/thumbnails
 
 # Redis Configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")

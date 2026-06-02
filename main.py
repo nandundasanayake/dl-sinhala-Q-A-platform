@@ -538,19 +538,69 @@ async def get_video(video_id: str):
 async def delete_video(video_id: str):
     try:
         video_id = urllib.parse.unquote(video_id)
-        
-        s3_client.delete_object(Bucket=BUCKET_NAME, Key=f"videos/{video_id}")
-        s3_client.delete_object(Bucket=BUCKET_NAME, Key=f"thumbnails/{video_id}.jpg")
-        try: 
-            s3_client.delete_object(Bucket=BUCKET_NAME, Key=f"transcripts/{video_id}.txt")
-        except: pass
-        
+        errors = []
+
+        clean_video_id = (video_id
+            .replace('.mp4', '').replace('.mov', '').replace('.avi', '').strip('/'))
+
+        # Build all filename variations (spaces vs underscores)
+        variants = list(dict.fromkeys([
+            clean_video_id,
+            clean_video_id.replace('_', ' '),
+            clean_video_id.replace(' ', '_'),
+        ]))
+
+        transcript_keys = [f"transcripts/{v}.txt" for v in variants]
+        thumbnail_keys  = [f"thumbnails/{v}.jpg"  for v in variants]
+
+        # Delete from BOTH buckets — handles files created before and after the config fix
+        for bucket in [BUCKET_NAME, OUTPUT_BUCKET_NAME]:
+            for key in transcript_keys:
+                try:
+                    s3_client.delete_object(Bucket=bucket, Key=key)
+                    print(f"✅ Deleted transcript {key} from {bucket}")
+                except Exception:
+                    pass
+
+            for key in thumbnail_keys:
+                try:
+                    s3_client.delete_object(Bucket=bucket, Key=key)
+                    print(f"✅ Deleted thumbnail {key} from {bucket}")
+                except Exception:
+                    pass
+
+        # Delete OpenSearch entries (all variants)
         try:
-            opensearch_client.delete_by_query(index=INDEX_NAME, body={"query": {"term": {"video_id": video_id}}})
-        except: pass
-        
-        return {"status": "success", "message": "Video deleted"}
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+            if opensearch_client:
+                opensearch_client.delete_by_query(
+                    index=INDEX_NAME,
+                    body={"query": {"bool": {"should": [
+                        {"term": {"video_id": v}} for v in variants
+                    ], "minimum_should_match": 1}}}
+                )
+                print(f"✅ Deleted OpenSearch entries for: {video_id}")
+        except Exception as e:
+            errors.append(f"OpenSearch: {str(e)}")
+            print(f"⚠️ OpenSearch delete failed: {e}")
+
+        # Clear Redis status (all variants)
+        try:
+            if redis_client:
+                for v in variants:
+                    redis_client.delete(f"video_status:{v}")
+                print(f"✅ Cleared Redis status for: {video_id}")
+        except Exception as e:
+            errors.append(f"Redis: {str(e)}")
+            print(f"⚠️ Redis delete failed: {e}")
+
+        return {
+            "status": "success",
+            "message": f"Video {video_id} deleted",
+            "errors": errors if errors else None
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/api/videos/{video_id}/regenerate-roadmap")
 async def regenerate_roadmap(video_id: str):
