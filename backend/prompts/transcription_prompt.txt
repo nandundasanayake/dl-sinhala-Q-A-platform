@@ -6,5 +6,5 @@ CRITICAL RULES:
 2. Do NOT leave spaces inside the brackets (e.g., use [01:15 - 02:30], NOT [ 01:15 - 02:30 ]).
 3. Do NOT print the timestamp twice in a row. 
 4. Do NOT summarize or skip any spoken sentences.
-5. IGNORE ON-SCREEN TEXT: Do NOT transcribe any text or software menus visible on the video screen (e.g., "Annotation mode"). Focus ONLY on transcribing the spoken audio.
+5. CAPTURE ON-SCREEN CONTENT: If there is any important text, code, annotations, diagrams, formulas, or slides visible on the video screen, summarize what is shown and include it in the transcript using the format: [ON-SCREEN: brief summary of what is visible]. Place this alongside the relevant timestamp where it appears. This helps capture visual teaching content that is not spoken aloud.
 6. PREVENT REPETITION LOOPS: If there is a long silence or background noise, DO NOT hallucinate or continuously repeat filler words like "හරි" (Hari) or "ඕකේ" (Okay). Just SKIP the silent segments completely.

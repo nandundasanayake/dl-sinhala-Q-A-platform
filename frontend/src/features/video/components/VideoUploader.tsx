@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, X, Loader2, CheckCircle, AlertCircle, PlayCircle } from 'lucide-react';
+import { Upload, X, Loader2, CheckCircle, AlertCircle, PlayCircle, Video, Mic } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -28,6 +28,7 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
   const [errorMessage, setErrorMessage] = useState('');
   const [isDragging, setIsDragging] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
+  const [transcriptionMode, setTranscriptionMode] = useState<'video' | 'voice'>('video');
   
   const { addVideo } = useVideoStore();
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -42,6 +43,7 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
         setProgress(0);
         setErrorMessage('');
         setStatusMessage('');
+        setTranscriptionMode('video');
         if (pollIntervalRef.current) {
           clearInterval(pollIntervalRef.current);
           pollIntervalRef.current = null;
@@ -248,7 +250,8 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
         },
         body: JSON.stringify({ 
           video_id: video_id,
-          original_title: title || original_filename  // Send the original title
+          original_title: title || original_filename,
+          transcription_mode: transcriptionMode
         }),
       });
 
@@ -402,6 +405,74 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
                   disabled
                   className="h-9 sm:h-10 text-sm border-input focus:border-ring focus:ring-ring/20 w-full"
                 />
+              </div>
+
+              {/* Transcription Mode Toggle */}
+              <div className="space-y-1 sm:space-y-2">
+                <Label className="text-xs sm:text-sm font-medium text-foreground">
+                  Transcription Mode
+                </Label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTranscriptionMode('video')}
+                    disabled={uploadStatus !== 'idle'}
+                    className={cn(
+                      "flex items-center gap-2 p-3 rounded-lg border-2 transition-all text-left",
+                      "disabled:opacity-50 disabled:cursor-not-allowed",
+                      transcriptionMode === 'video'
+                        ? "border-brand bg-brand/5 ring-1 ring-brand/20"
+                        : "border-border hover:border-muted-foreground/30 bg-card"
+                    )}
+                  >
+                    <div className={cn(
+                      "w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0",
+                      transcriptionMode === 'video' ? "bg-brand/10" : "bg-muted"
+                    )}>
+                      <Video className={cn(
+                        "w-4 h-4",
+                        transcriptionMode === 'video' ? "text-brand" : "text-muted-foreground"
+                      )} />
+                    </div>
+                    <div>
+                      <p className={cn(
+                        "text-xs font-semibold",
+                        transcriptionMode === 'video' ? "text-brand" : "text-foreground"
+                      )}>Video + Audio</p>
+                      <p className="text-[10px] text-muted-foreground leading-tight mt-0.5">Screen content + voice</p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setTranscriptionMode('voice')}
+                    disabled={uploadStatus !== 'idle'}
+                    className={cn(
+                      "flex items-center gap-2 p-3 rounded-lg border-2 transition-all text-left",
+                      "disabled:opacity-50 disabled:cursor-not-allowed",
+                      transcriptionMode === 'voice'
+                        ? "border-purple-500 bg-purple-500/5 ring-1 ring-purple-500/20"
+                        : "border-border hover:border-muted-foreground/30 bg-card"
+                    )}
+                  >
+                    <div className={cn(
+                      "w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0",
+                      transcriptionMode === 'voice' ? "bg-purple-500/10" : "bg-muted"
+                    )}>
+                      <Mic className={cn(
+                        "w-4 h-4",
+                        transcriptionMode === 'voice' ? "text-purple-500" : "text-muted-foreground"
+                      )} />
+                    </div>
+                    <div>
+                      <p className={cn(
+                        "text-xs font-semibold",
+                        transcriptionMode === 'voice' ? "text-purple-500" : "text-foreground"
+                      )}>Voice Only</p>
+                      <p className="text-[10px] text-muted-foreground leading-tight mt-0.5">Audio/voice only</p>
+                    </div>
+                  </button>
+                </div>
               </div>
 
               <div className={cn(

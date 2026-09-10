@@ -13,4 +13,5 @@ class ChatRequest(BaseModel):
 
 class ProcessVideoRequest(BaseModel):
     video_id: str
-    original_title: Optional[str] = None  # Add this line
+    original_title: Optional[str] = None
+    transcription_mode: Optional[str] = "video"  # "video" (video+audio) or "voice" (audio only)

@@ -12,7 +12,7 @@ from config import FFMPEG_CMD, UPLOAD_DIR, STATUS_CACHE_TTL, AWS_REGION, BUCKET_
 from services.redis_service import save_to_redis, upload_statuses
 from services.opensearch_service import opensearch_client, INDEX_NAME
 from services.s3_service import s3_client, upload_text_to_s3
-from services.gemini_service import client, get_transcription_prompt
+from services.gemini_service import client, get_transcription_prompt, get_voice_transcription_prompt
 from utils.helpers import get_video_duration_seconds
 from utils.chunking import split_into_chunks
 from utils.timestamps import adjust_timestamps
@@ -52,8 +52,11 @@ def generate_and_upload_thumbnail(video_url, video_id, time_offset=5):
         print(f"⚠️ Could not generate thumbnail: {e}")
         return None
 
-def process_video_background(video_id: str, original_title: str = None):
-    """Processes large videos in the background by streaming from S3 and splitting them into chunks to avoid memory and API limits."""
+def process_video_background(video_id: str, original_title: str = None, transcription_mode: str = "video"):
+    """Processes large videos in the background by streaming from S3 and splitting them into chunks to avoid memory and API limits.
+    
+    transcription_mode: 'video' = full video+audio (with on-screen capture), 'voice' = audio-only transcription
+    """
     
     def update_status(status, message, progress):
         status_data = {
@@ -83,7 +86,7 @@ def process_video_background(video_id: str, original_title: str = None):
         
         # 2. Extract Duration
         duration_sec = get_video_duration_seconds(video_url)
-        print(f"✅ Extracted duration: {duration_sec} seconds")
+        print(f"[OK] Extracted duration: {duration_sec} seconds")
         
         hours = int(duration_sec // 3600)
         minutes = int((duration_sec % 3600) // 60)
@@ -100,31 +103,53 @@ def process_video_background(video_id: str, original_title: str = None):
         total_parts = math.ceil(duration_sec / CHUNK_DURATION) if duration_sec > 0 else 1
         full_transcript = ""
         all_chunk_summaries = []
-        prompt = get_transcription_prompt()
+        
+        # Select prompt based on transcription mode
+        is_voice_only = transcription_mode == "voice"
+        if is_voice_only:
+            prompt = get_voice_transcription_prompt()
+            print(f"[MODE] VOICE-ONLY (audio extraction)")
+        else:
+            prompt = get_transcription_prompt()
+            print(f"[MODE] VIDEO + AUDIO (with on-screen capture)")
 
         for i in range(total_parts):
             try:
                 start_time = i * CHUNK_DURATION
-                chunk_file = os.path.join(UPLOAD_DIR, f"{video_id}_part{i}.mp4")
                 update_status("processing", f"Transcribing part {i+1} of {total_parts}...", 30 + int((i/total_parts)*40))
                 
-                # FFmpeg Chunking
-                subprocess.run([
-                    FFMPEG_CMD, "-y", "-i", video_url,
-                    "-ss", str(start_time), "-t", str(CHUNK_DURATION),
-                    "-c", "copy", chunk_file
-                ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if is_voice_only:
+                    # VOICE-ONLY MODE: Extract audio as .mp3
+                    chunk_file = os.path.join(UPLOAD_DIR, f"{video_id}_part{i}.mp3")
+                    subprocess.run([
+                        FFMPEG_CMD, "-y", "-i", video_url,
+                        "-ss", str(start_time), "-t", str(CHUNK_DURATION),
+                        "-vn",              # Remove video stream
+                        "-acodec", "libmp3lame",
+                        "-ab", "128k",       # Audio bitrate
+                        chunk_file
+                    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    print(f"   [AUDIO] Audio chunk extracted: {chunk_file}")
+                else:
+                    # VIDEO MODE: Keep full video chunk as .mp4
+                    chunk_file = os.path.join(UPLOAD_DIR, f"{video_id}_part{i}.mp4")
+                    subprocess.run([
+                        FFMPEG_CMD, "-y", "-i", video_url,
+                        "-ss", str(start_time), "-t", str(CHUNK_DURATION),
+                        "-c", "copy", chunk_file
+                    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    print(f"   [VIDEO] Video chunk extracted: {chunk_file}")
 
-                # Gemini Upload
-                video_file_gemini = client.files.upload(file=chunk_file)
-                while video_file_gemini.state.name == "PROCESSING":
+                # Gemini Upload (works for both .mp3 and .mp4)
+                gemini_file = client.files.upload(file=chunk_file)
+                while gemini_file.state.name == "PROCESSING":
                     time.sleep(5)
-                    video_file_gemini = client.files.get(name=video_file_gemini.name)
+                    gemini_file = client.files.get(name=gemini_file.name)
 
                 # Model Generation (Gemini 2.5 Flash)
                 response = client.models.generate_content(
                     model="gemini-2.5-flash",
-                    contents=[video_file_gemini, prompt]
+                    contents=[gemini_file, prompt]
                 )
                 
                 adjusted_transcript = adjust_timestamps(response.text, int(start_time))
@@ -139,17 +164,17 @@ def process_video_background(video_id: str, original_title: str = None):
                     )
                     all_chunk_summaries.append(summary_response.text)
                 except Exception as summary_e:
-                    print(f"⚠️ Summary generation failed for chunk {i}: {summary_e}")
+                    print(f"[WARN] Summary generation failed for chunk {i}: {summary_e}")
                 
                 # Cleanup Gemini file & Local chunk
-                client.files.delete(name=video_file_gemini.name)
+                client.files.delete(name=gemini_file.name)
                 if os.path.exists(chunk_file): os.remove(chunk_file)
                 
-                print(f"✅ Part {i+1} success.")
+                print(f"[OK] Part {i+1} success.")
                 time.sleep(2) # Avoid rate limits
 
             except Exception as chunk_e:
-                print(f"❌ Error in chunk {i}: {chunk_e}")
+                print(f"[ERROR] Error in chunk {i}: {chunk_e}")
                 traceback.print_exc()
                 continue
 
@@ -165,11 +190,11 @@ def process_video_background(video_id: str, original_title: str = None):
                 with open(prompt_path, 'r', encoding='utf-8') as file:
                     prompt_template = file.read()
                     
-                print("\n" + "═" * 60)
-                print("📝 MERGED SUMMARIES (ADMIN DEBUG VIEW)")
-                print("═" * 60)
+                print("\n" + "=" * 60)
+                print("[DEBUG] MERGED SUMMARIES (ADMIN DEBUG VIEW)")
+                print("=" * 60)
                 print(merged_summaries)
-                print("═" * 60 + "\n")
+                print("=" * 60 + "\n")
 
                 roadmap_prompt = prompt_template.format(merged_summaries=merged_summaries)
                 
@@ -187,9 +212,9 @@ def process_video_background(video_id: str, original_title: str = None):
                 
                 roadmap_json = json.loads(roadmap_text)
                 formatted_roadmap = json.dumps(roadmap_json, ensure_ascii=False)
-                print(f"✅ Roadmap generated for {video_id}")
+                print(f"[OK] Roadmap generated for {video_id}")
             except Exception as roadmap_e:
-                print(f"⚠️ Roadmap generation failed: {roadmap_e}")
+                print(f"[WARN] Roadmap generation failed: {roadmap_e}")
                 traceback.print_exc()
         
         # Append roadmap to transcript
@@ -221,7 +246,7 @@ def process_video_background(video_id: str, original_title: str = None):
                     "thumbnail_url": thumbnail_url
                 })
             except Exception as e:
-                print(f"⚠️ Indexing error: {e}")
+                print(f"[WARN] Indexing error: {e}")
 
         # 6. Complete
         completed_data = {
@@ -230,13 +255,18 @@ def process_video_background(video_id: str, original_title: str = None):
             "progress": 100,
             "timestamp": datetime.utcnow().isoformat(),
             "data": {
-                "video_s3_url": video_s3_url, "duration": formatted_duration, "thumbnail_url": thumbnail_url
+                "video_s3_url": video_s3_url,
+                "transcript_s3_url": transcript_s3_url,
+                "duration": formatted_duration,
+                "thumbnail_url": thumbnail_url,
+                "original_title": original_title
             }
         }
-        save_to_redis(f"video_status:{video_id}", completed_data, ttl_seconds=STATUS_CACHE_TTL)
-        print(f"🏁 [{video_id}] Final Status: COMPLETED")
+        if not save_to_redis(f"video_status:{video_id}", completed_data, ttl_seconds=STATUS_CACHE_TTL):
+            upload_statuses[video_id] = completed_data
+        print(f"[DONE] [{video_id}] Final Status: COMPLETED")
 
     except Exception as e:
-        print(f"\n❌ FATAL ERROR IN BACKGROUND TASK: {str(e)}")
+        print(f"\n[FATAL] FATAL ERROR IN BACKGROUND TASK: {str(e)}")
         traceback.print_exc()
         update_status("error", f"Processing failed: {str(e)}", 0)

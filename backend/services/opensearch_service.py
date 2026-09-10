@@ -95,22 +95,22 @@ def init_opensearch():
             use_ssl=True,
             verify_certs=True,
             connection_class=RequestsHttpConnection,
-            timeout=60,
-            max_retries=5,
-            retry_on_timeout=True,
+            timeout=5,
+            max_retries=1,
+            retry_on_timeout=False,
             pool_maxsize=20
         )
         _services['client'] = client
         
         if env == "local":
-            print(f"✅ OpenSearch client initialized with Basic Auth")
+            print(f"[OK] OpenSearch client initialized with Basic Auth")
         else:
-            print(f"✅ OpenSearch client initialized with IAM role", flush=True)
+            print(f"[OK] OpenSearch client initialized with IAM role", flush=True)
             
         print(f"   Host: {host}:443")
         return True
     except Exception as e:
-        print(f"⚠️ OpenSearch connection failed: {e}")
+        print(f"[WARN] OpenSearch connection failed: {e}")
         _services['client'] = None
         return False
 
@@ -122,7 +122,7 @@ def setup_opensearch_index():
     """Ensures the OpenSearch index exists and is configured for k-NN vector search."""
     client = get_opensearch_client()
     if not client:
-        print("⚠️ OpenSearch client not available, skipping index setup")
+        print("[WARN] OpenSearch client not available, skipping index setup")
         return
     try:
         if not client.indices.exists(index=INDEX_NAME):
@@ -155,11 +155,11 @@ def setup_opensearch_index():
                 }
             }
             client.indices.create(index=INDEX_NAME, body=index_body)
-            print(f"✅ Created OpenSearch Index: {INDEX_NAME}")
+            print(f"[OK] Created OpenSearch Index: {INDEX_NAME}")
         else:
-            print(f"✅ OpenSearch Index already exists: {INDEX_NAME}")
+            print(f"[OK] OpenSearch Index already exists: {INDEX_NAME}")
     except Exception as e:
-        print(f"⚠️ OpenSearch Connection Warning: {e}")
+        print(f"[WARN] OpenSearch Connection Warning: {e}")
 
 # For backward compatibility - create a property
 class _OpensearchProxy:

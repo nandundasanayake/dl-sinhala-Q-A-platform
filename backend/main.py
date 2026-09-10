@@ -11,12 +11,13 @@ from google.genai import types
 from datetime import datetime
 import urllib.parse
 
-from config import UPLOAD_DIR, BUCKET_NAME, AWS_REGION, REDIS_DB, STATUS_CACHE_TTL, CHAT_CACHE_TTL, OPENSEARCH_HOST, OPENSEARCH_PORT
+from config import UPLOAD_DIR, BUCKET_NAME, AWS_REGION, REDIS_DB, STATUS_CACHE_TTL, CHAT_CACHE_TTL, OPENSEARCH_HOST, OPENSEARCH_PORT, ENABLE_REDIS_CACHE
 from services.redis_service import init_redis, save_to_redis, get_from_redis, redis_client, upload_statuses, chat_response_cache
 from services.opensearch_service import init_opensearch, setup_opensearch_index, get_opensearch_client, opensearch_client, INDEX_NAME
 from services.s3_service import s3_client
-from services.gemini_service import client as gemini_client, get_chat_system_prompt, get_rewrite_prompt_template
+from services.gemini_service import client as gemini_client, get_chat_system_prompt, get_rewrite_prompt_template, get_query_embedding
 from services.video_processor import process_video_background, generate_and_upload_thumbnail
+from utils.helpers import get_video_duration_seconds
 from prompts.Roadmap_prompt import ROADMAP_KEYWORDS, ROADMAP_HEADER, ROADMAP_CHAPTER_BULLET, ROADMAP_SUBTOPIC_BULLET, ROADMAP_VERTICAL_CONNECTOR, ROADMAP_CLOSING_MESSAGE, ROADMAP_NOT_FOUND_MESSAGE
 from models.schemas import ChatMessage, ChatRequest, ProcessVideoRequest
 
@@ -41,7 +42,15 @@ async def add_ngrok_header(request, call_next):
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "https://dl-sinhala-q-a-platform.vercel.app", "https://intimidatory-divergently-yen.ngrok-free.dev"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "https://dl-sinhala-q-a-platform.vercel.app",
+        "https://intimidatory-divergently-yen.ngrok-free.dev"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -58,6 +67,68 @@ async def get_upload_status(video_id: str):
     status = get_from_redis(f"video_status:{video_id}")
     if status:
         return status
+
+    if video_id in upload_statuses:
+        status_data = upload_statuses[video_id]
+        if status_data.get("status") == "completed":
+            return status_data
+
+    # Fail-safe check: If transcript file already exists on S3, mark completed
+    transcript_key = f"transcripts/{video_id}.txt"
+    try:
+        s3_client.head_object(Bucket=BUCKET_NAME, Key=transcript_key)
+        video_s3_url = f"https://{BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/videos/{video_id}"
+        transcript_s3_url = f"https://{BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{transcript_key}"
+        thumbnail_url = f"https://{BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/thumbnails/{video_id}.jpg"
+        display_name = video_id.split("---")[-1] if "---" in video_id else video_id
+        original_title = display_name.replace(".mp4", "").replace(".mov", "").replace(".avi", "").replace("_", " ").title()
+
+        formatted_duration = "00:00"
+        if opensearch_client:
+            try:
+                res = opensearch_client.search(
+                    index=INDEX_NAME,
+                    body={"query": {"term": {"video_id": video_id}}, "size": 1, "_source": ["duration"]}
+                )
+                if res.get('hits', {}).get('hits'):
+                    formatted_duration = res['hits']['hits'][0]['_source'].get('duration', '00:00')
+            except Exception:
+                pass
+
+        if formatted_duration in ["00:00", "0:00"]:
+            try:
+                presigned_url = s3_client.generate_presigned_url(
+                    'get_object',
+                    Params={'Bucket': BUCKET_NAME, 'Key': f"videos/{video_id}"},
+                    ExpiresIn=3600
+                )
+                duration_sec = get_video_duration_seconds(presigned_url)
+                if duration_sec > 0:
+                    hours = int(duration_sec // 3600)
+                    minutes = int((duration_sec % 3600) // 60)
+                    seconds = int(duration_sec % 60)
+                    formatted_duration = f"{hours}:{minutes:02d}:{seconds:02d}" if hours > 0 else f"{minutes}:{seconds:02d}"
+            except Exception as e:
+                print(f"⚠️ Could not extract duration in status endpoint: {e}")
+
+        completed_data = {
+            "status": "completed",
+            "message": "Processing complete!",
+            "progress": 100,
+            "timestamp": datetime.utcnow().isoformat(),
+            "data": {
+                "video_s3_url": video_s3_url,
+                "transcript_s3_url": transcript_s3_url,
+                "duration": formatted_duration,
+                "thumbnail_url": thumbnail_url,
+                "original_title": original_title
+            }
+        }
+        upload_statuses[video_id] = completed_data
+        return completed_data
+    except Exception:
+        pass
+
     if video_id not in upload_statuses:
         raise HTTPException(status_code=404, detail="Status not found")
     return upload_statuses[video_id]
@@ -91,25 +162,26 @@ async def process_video(request: ProcessVideoRequest, background_tasks: Backgrou
         if not save_to_redis(f"video_status:{request.video_id}", initial_status, ttl_seconds=STATUS_CACHE_TTL):
             upload_statuses[request.video_id] = initial_status
         
-        background_tasks.add_task(process_video_background, request.video_id, request.original_title)
-        return {"status": "processing", "video_id": request.video_id, "message": "Processing started"}
+        background_tasks.add_task(process_video_background, request.video_id, request.original_title, request.transcription_mode or "video")
+        print(f"[PROCESS] Processing started for {request.video_id} | Mode: {request.transcription_mode}")
+        return {"status": "processing", "video_id": request.video_id, "message": "Processing started", "transcription_mode": request.transcription_mode}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/chat")
 async def ask_question(request: ChatRequest):
     print("\n" + "="*70)
-    print("💬 CHAT REQUEST RECEIVED")
+    print("[CHAT] CHAT REQUEST RECEIVED")
     print("="*70)
-    print(f"📹 Video ID: {request.video_id}")
-    print(f"❓ Question: {request.question}")
-    print(f"📜 Chat History Length: {len(request.chat_history)} messages")
+    print(f"   Video ID: {request.video_id}")
+    print(f"   Question: {request.question}")
+    print(f"   Chat History Length: {len(request.chat_history)} messages")
     try:
         # ROADMAP INTERCEPTION
         question_lower = request.question.lower()
         
         if any(keyword in question_lower for keyword in ROADMAP_KEYWORDS):
-            print("\n🗺️ ROADMAP REQUEST DETECTED - Checking transcript...")
+            print("\n[ROADMAP] ROADMAP REQUEST DETECTED - Checking transcript...")
             
             # Fetch transcript from S3
             transcript_key = f"transcripts/{request.video_id}.txt"
@@ -119,7 +191,7 @@ async def ask_question(request: ChatRequest):
                 
                 # Check if roadmap exists in transcript
                 if "=== VIDEO ROADMAP ===" in transcript_text:
-                    print("✅ Roadmap found in transcript - Serving directly")
+                    print("[OK] Roadmap found in transcript - Serving directly")
                     roadmap_section = transcript_text.split("=== VIDEO ROADMAP ===")[1].strip()
                     
                     try:
@@ -171,17 +243,17 @@ async def ask_question(request: ChatRequest):
                         
                         return StreamingResponse(roadmap_stream(), media_type='text/plain')
                     except Exception as parse_e:
-                        print(f"⚠️ Roadmap parsing failed: {parse_e}")
+                        print(f"[WARN] Roadmap parsing failed: {parse_e}")
                 else:
-                    print("❌ Roadmap not found in transcript")
+                    print("[INFO] Roadmap not found in transcript")
             except Exception as e:
-                print(f"⚠️ Could not fetch transcript: {e}")
+                print(f"[WARN] Could not fetch transcript: {e}")
             
             async def no_roadmap_stream():
                 yield ROADMAP_NOT_FOUND_MESSAGE
             return StreamingResponse(no_roadmap_stream(), media_type='text/plain')
         
-        print("\n📍 STEP 1: Checking Cache")
+        print("\n[CACHE] STEP 1: Checking Cache")
         history_str = "".join([m.content for m in request.chat_history[-2:]])
         raw_key = f"{request.video_id}_{request.question}_{history_str}"
         cache_key = hashlib.md5(raw_key.encode()).hexdigest()
@@ -189,35 +261,35 @@ async def ask_question(request: ChatRequest):
         cached = get_from_redis(f"chat_cache:{cache_key}")
         print(f"Cache lookup for key: chat_cache:{cache_key} - {'HIT' if cached else 'MISS'}")
         if cached:
-            print(f"⚡ Returning from Redis Cache! Saved API cost for: {request.question}")
+            print(f"[FAST] Returning from Redis Cache! Saved API cost for: {request.question}")
             async def cached_stream():
                 yield cached.get("answer", "")
             return StreamingResponse(cached_stream(), media_type='text/plain')
         
         if cache_key in chat_response_cache:
-            print(f"⚡ Returning from Memory Cache! Saved API cost for: {request.question}")
+            print(f"[FAST] Returning from Memory Cache! Saved API cost for: {request.question}")
             async def cached_stream():
                 yield chat_response_cache[cache_key]
             return StreamingResponse(cached_stream(), media_type='text/plain')
 
-        history_text = "\n".join([f"{m.role}: {m.content}" for m in request.chat_history[-2:]])
-        print(f"   History text: {history_text[:100]}...")
-        rewrite_template = get_rewrite_prompt_template()
-        rewrite_prompt = rewrite_template.format(history_text=history_text, question=request.question)
-        print(f"   Rewrite prompt created (length: {len(rewrite_prompt)} chars)")
-        rewritten_q = gemini_client.models.generate_content(
-            model="gemini-2.5-flash-lite", contents=rewrite_prompt,
-            config=types.GenerateContentConfig(temperature=0.2)
-        )
-        search_query_text = rewritten_q.text.strip()
-        print(f"   ✅ Rewritten query: {search_query_text}")
+        if not request.chat_history:
+            search_query_text = request.question
+            print(f"   [INFO] First question in chat session - skipping question rewrite")
+        else:
+            history_text = "\n".join([f"{m.role}: {m.content}" for m in request.chat_history[-2:]])
+            print(f"   History text: {history_text[:100]}...")
+            rewrite_template = get_rewrite_prompt_template()
+            rewrite_prompt = rewrite_template.format(history_text=history_text, question=request.question)
+            print(f"   Rewrite prompt created (length: {len(rewrite_prompt)} chars)")
+            rewritten_q = gemini_client.models.generate_content(
+                model="gemini-2.5-flash-lite", contents=rewrite_prompt,
+                config=types.GenerateContentConfig(temperature=0.2)
+            )
+            search_query_text = rewritten_q.text.strip()
+            print(f"   [OK] Rewritten query: {search_query_text}")
 
-        result = gemini_client.models.embed_content(
-            model="gemini-embedding-001", contents=search_query_text,
-            config=types.EmbedContentConfig(task_type="RETRIEVAL_QUERY", output_dimensionality=768)
-        )
-        vector = result.embeddings[0].values
-        print(f"   ✅ Embedding generated (dimensions: {len(vector)})")
+        vector = get_query_embedding(search_query_text)
+        print(f"   [OK] Embedding ready (dimensions: {len(vector)})")
         
         search_query = {
             "size": 10,
@@ -239,12 +311,12 @@ async def ask_question(request: ChatRequest):
             try:
                 res = os_client.search(index=INDEX_NAME, body=search_query)
                 context = "\n---\n".join([hit['_source']['text_chunk'] for hit in res['hits']['hits']])
-                print(f"   ✅ OpenSearch returned {len(res['hits']['hits'])} chunks")
+                print(f"   [OK] OpenSearch returned {len(res['hits']['hits'])} chunks")
                 print(f"   Context length: {len(context)} chars")
             except Exception as e:
-                print(f"   ⚠️ OpenSearch search error: {e}")
+                print(f"   [WARN] OpenSearch search error: {e}")
         else:
-            print(f"   ⚠️ OpenSearch client not available")
+            print(f"   [WARN] OpenSearch client not available")
 
         system_instr = get_chat_system_prompt()
         print(f"   System instruction loaded (length: {len(system_instr)} chars)")
@@ -270,15 +342,16 @@ async def ask_question(request: ChatRequest):
                     chunk_count += 1
                     yield chunk.text
 
-            print(f"   ✅ Stream completed: {chunk_count} chunks, {len(full_response)} characters total")
+            print(f"   [OK] Stream completed: {chunk_count} chunks, {len(full_response)} characters total")
 
             if not save_to_redis(f"chat_cache:{cache_key}", {
                 "answer": full_response,
                 "timestamp": datetime.utcnow().isoformat()
             }, ttl_seconds=CHAT_CACHE_TTL):
                 chat_response_cache[cache_key] = full_response
+                print(f"   [OK] Answer saved to Memory cache")
             else:
-                print(f"   ✅ Answer saved to Redis cache (TTL: {CHAT_CACHE_TTL} seconds)")
+                print(f"   [OK] Answer saved to Redis cache (TTL: {CHAT_CACHE_TTL} seconds)")
                     
         return StreamingResponse(generate_stream(), media_type='text/plain')
         
@@ -376,6 +449,9 @@ async def list_videos():
                 # Get title and duration from OpenSearch
                 title = title_map.get(video_filename)
                 duration = duration_map.get(video_filename, '0:00')
+                if not duration or duration in ['0:00', '00:00']:
+                    if video_filename in upload_statuses and upload_statuses[video_filename].get('data', {}).get('duration'):
+                        duration = upload_statuses[video_filename]['data']['duration']
                 
                 # Fallback to extracting from filename if no title in OpenSearch
                 if not title:

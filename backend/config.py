@@ -33,6 +33,9 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_DB = int(os.getenv("REDIS_DB", 0))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
 
+# Cache Enable/Disable Toggle (set ENABLE_REDIS_CACHE=true in .env to re-enable)
+ENABLE_REDIS_CACHE = os.getenv("ENABLE_REDIS_CACHE", "false").lower() == "true"
+
 # Cache TTL constants
 CHAT_CACHE_TTL = int(os.getenv("CHAT_CACHE_TTL", 604800))   # 7 days
 STATUS_CACHE_TTL = int(os.getenv("STATUS_CACHE_TTL", 7200))  # 2 hours
