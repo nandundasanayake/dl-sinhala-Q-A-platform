@@ -49,7 +49,7 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://127.0.0.1:5174",
         "https://dl-sinhala-q-a-platform.vercel.app",
-        "https://dl-sinhala-q-a-platform-alpha.vercel.app"
+        "https://dl-sinhala-q-a-platform-alpha.vercel.app",
         "https://intimidatory-divergently-yen.ngrok-free.dev"
     ],
     allow_credentials=True,

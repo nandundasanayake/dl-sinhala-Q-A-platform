@@ -8,10 +8,7 @@ if not GEMINI_API_KEY:
 
 from google.genai import types
 
-client = genai.Client(
-    api_key=GEMINI_API_KEY,
-    http_options={'timeout': 10000} # 10s timeout to prevent API hangs
-)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 _embedding_cache = {}
 
