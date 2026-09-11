@@ -7,6 +7,10 @@ import traceback
 from datetime import datetime
 from typing import Dict
 from google.genai import types
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, before_sleep_log
+import logging
+
+logger = logging.getLogger(__name__)
 
 from config import FFMPEG_CMD, UPLOAD_DIR, STATUS_CACHE_TTL, AWS_REGION, BUCKET_NAME
 from services.redis_service import save_to_redis, upload_statuses
@@ -51,6 +55,20 @@ def generate_and_upload_thumbnail(video_url, video_id, time_offset=5):
     except Exception as e:
         print(f"⚠️ Could not generate thumbnail: {e}")
         return None
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=4, max=30),
+    retry=retry_if_exception_type(Exception),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
+def _call_gemini_generate(gemini_file, prompt):
+    """Calls Gemini generate_content with automatic retries on transient errors (e.g. 504 DEADLINE_EXCEEDED)."""
+    return client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[gemini_file, prompt]
+    )
 
 def process_video_background(video_id: str, original_title: str = None, transcription_mode: str = "video"):
     """Processes large videos in the background by streaming from S3 and splitting them into chunks to avoid memory and API limits.
@@ -114,10 +132,12 @@ def process_video_background(video_id: str, original_title: str = None, transcri
             print(f"[MODE] VIDEO + AUDIO (with on-screen capture)")
 
         for i in range(total_parts):
+            start_time = i * CHUNK_DURATION
+            chunk_file = None
+            gemini_file_ref = None
+            update_status("processing", f"Transcribing part {i+1} of {total_parts}...", 30 + int((i/total_parts)*40))
+            
             try:
-                start_time = i * CHUNK_DURATION
-                update_status("processing", f"Transcribing part {i+1} of {total_parts}...", 30 + int((i/total_parts)*40))
-                
                 if is_voice_only:
                     # VOICE-ONLY MODE: Extract audio as .mp3
                     chunk_file = os.path.join(UPLOAD_DIR, f"{video_id}_part{i}.mp3")
@@ -141,16 +161,13 @@ def process_video_background(video_id: str, original_title: str = None, transcri
                     print(f"   [VIDEO] Video chunk extracted: {chunk_file}")
 
                 # Gemini Upload (works for both .mp3 and .mp4)
-                gemini_file = client.files.upload(file=chunk_file)
-                while gemini_file.state.name == "PROCESSING":
+                gemini_file_ref = client.files.upload(file=chunk_file)
+                while gemini_file_ref.state.name == "PROCESSING":
                     time.sleep(5)
-                    gemini_file = client.files.get(name=gemini_file.name)
+                    gemini_file_ref = client.files.get(name=gemini_file_ref.name)
 
-                # Model Generation (Gemini 2.5 Flash)
-                response = client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=[gemini_file, prompt]
-                )
+                # Model Generation (Gemini 2.5 Flash) — retries up to 3x with exponential backoff
+                response = _call_gemini_generate(gemini_file_ref, prompt)
                 
                 adjusted_transcript = adjust_timestamps(response.text, int(start_time))
                 full_transcript += adjusted_transcript + "\n\n"
@@ -166,17 +183,24 @@ def process_video_background(video_id: str, original_title: str = None, transcri
                 except Exception as summary_e:
                     print(f"[WARN] Summary generation failed for chunk {i}: {summary_e}")
                 
-                # Cleanup Gemini file & Local chunk
-                client.files.delete(name=gemini_file.name)
-                if os.path.exists(chunk_file): os.remove(chunk_file)
-                
                 print(f"[OK] Part {i+1} success.")
                 time.sleep(2) # Avoid rate limits
 
             except Exception as chunk_e:
-                print(f"[ERROR] Error in chunk {i}: {chunk_e}")
+                # Gemini call failed after all retries (or another critical error) — halt pipeline
+                print(f"[FATAL] Unrecoverable error in chunk {i}: {chunk_e}")
                 traceback.print_exc()
-                continue
+                update_status("failed", f"Transcription failed on part {i+1}/{total_parts}: {chunk_e}", 0)
+                return
+            finally:
+                # Always clean up Gemini remote file and local chunk, even on failure
+                if gemini_file_ref:
+                    try:
+                        client.files.delete(name=gemini_file_ref.name)
+                    except Exception:
+                        pass
+                if chunk_file and os.path.exists(chunk_file):
+                    os.remove(chunk_file)
 
         # REDUCE PHASE: Generate final roadmap
         formatted_roadmap = ""
